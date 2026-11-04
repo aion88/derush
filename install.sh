@@ -7,6 +7,22 @@
 # Chaque ligne : OK <quoi> | INSTALLÉ <quoi> | MANQUE <quoi> → <commande>
 # Variables de test : DERUSH_APP_DIR (dossier de Derush.app), DERUSH_NO_LAUNCHCTL=1 (écrit le plist, ne le charge pas).
 set -uo pipefail
+# En une ligne, sans clone préalable :
+#   curl -fsSL https://raw.githubusercontent.com/aion88/derush/main/install.sh | bash
+# Lancé hors d'un clone, le script clone (ou met à jour) DERUSH_SRC puis se relance depuis là.
+_self="${BASH_SOURCE[0]:-}"
+if [ -z "$_self" ] || [ ! -f "$(dirname "$_self")/bin/derush" ]; then
+  SRC="${DERUSH_SRC:-$HOME/.local/share/derush/src}"
+  REPO="${DERUSH_REPO:-https://github.com/aion88/derush}"
+  command -v git >/dev/null 2>&1 || { echo "MANQUE git → xcode-select --install"; exit 1; }
+  if [ -d "$SRC/.git" ]; then
+    git -C "$SRC" pull -q --ff-only || { echo "MANQUE mise à jour de $SRC → git -C \"$SRC\" pull"; exit 1; }
+  else
+    mkdir -p "$(dirname "$SRC")" && git clone -q "$REPO" "$SRC" || { echo "MANQUE clone → git clone $REPO \"$SRC\""; exit 1; }
+  fi
+  echo "OK source $SRC"
+  exec bash "$SRC/install.sh" "$@" </dev/null
+fi
 ROOT="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 CHECK=0 MODELS=0 ATLOGIN=0
 for a in "$@"; do case "$a" in
