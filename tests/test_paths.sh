@@ -48,7 +48,7 @@ printf 'DERUSH_FOO_TEST=1\nDERUSH_OPEN=%s\nDERUSH_OUT_ROOT=%s\nDERUSH_EDIT_PORT=
 STEM2="Movie on 11-10-2026 at 20.42 #2"
 mkdir -p "$H2/rushs/$STEM2/_work"; : > "$H2/src.mov"; echo x > "$H2/rushs/$STEM2/_work/proxy.mp4"; echo '{}' > "$H2/rushs/$STEM2/_work/aligned.json"
 echo "$H2/src.mov" > "$H2/rushs/$STEM2/_work/source.txt"
-env -i HOME="$H2" PATH="$PATH" "$ROOT/bin/derush" edit "$STEM2" >/dev/null 2>&1 &
+env -i HOME="$H2" PATH="$PATH" DERUSH_PY="${DERUSH_PY:-$HOME/.local/share/derush/venv/bin/python}" "$ROOT/bin/derush" edit "$STEM2" >/dev/null 2>&1 &
 EPID=$!
 for _ in $(seq 1 50); do [ -s "$REC" ] && break; sleep 0.2; done
 pkill -P $EPID 2>/dev/null; kill $EPID 2>/dev/null; wait $EPID 2>/dev/null

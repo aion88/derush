@@ -24,7 +24,7 @@
 #   Use LOSSLESS=1 only when the source has dense, regular keyframes AND you can
 #   tolerate keyframe-snapping (e.g. already-encoded delivery files).
 #
-# Dependencies: ffmpeg, ffprobe on PATH, python3.
+# Dependencies: ffmpeg, ffprobe on PATH, and $DERUSH_PY (the derush venv; falls back to python3).
 #
 # Note: ffmpeg may emit "Non-monotonic DTS" warnings during concat when a
 # source has non-zero base timestamps (e.g. synthetic test clips). These are
@@ -55,8 +55,8 @@ if [[ ! -f "$RANGES_JSON" ]]; then
   exit 1
 fi
 
-# --- Parse JSON with python3 (available, avoids jq version quirks) -----------
-PARSED=$(python3 - "$RANGES_JSON" <<'PYEOF'
+# --- Parse JSON with $DERUSH_PY (avoids jq version quirks) -----------
+PARSED=$(${DERUSH_PY:-python3} - "$RANGES_JSON" <<'PYEOF'
 import json, sys
 data = json.loads(open(sys.argv[1]).read())
 if not isinstance(data, list) or len(data) == 0:
@@ -93,7 +93,7 @@ echo "Cut mode: $MODE"
 # between segments carry no click/pop — the edit is inaudible. FADE_MS=0 disables.
 # Only possible on the re-encode path (afade needs to filter, not -c copy).
 FADE_MS="${FADE_MS:-12}"
-FADE_S=$(python3 -c "print(max(0.0, ${FADE_MS}/1000.0))" </dev/null)
+FADE_S=$(${DERUSH_PY:-python3} -c "print(max(0.0, ${FADE_MS}/1000.0))" </dev/null)
 APPLY_FADE=1
 if [[ "${LOSSLESS:-0}" == "1" || "${FADE_MS}" == "0" ]]; then
   APPLY_FADE=0
@@ -113,7 +113,7 @@ mkdir -p "$(dirname "$OUTPUT")"
 if [[ "${LOSSLESS:-0}" != "1" ]]; then
   FPS=$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=nw=1:nk=1 "$SRC")
   GRAPH="$TMPDIR/graph.txt"
-  TOTAL_KEPT=$(python3 - "$RANGES_JSON" "$FPS" "$FADE_S" "$APPLY_FADE" "$GRAPH" <<'PYEOF'
+  TOTAL_KEPT=$(${DERUSH_PY:-python3} - "$RANGES_JSON" "$FPS" "$FADE_S" "$APPLY_FADE" "$GRAPH" <<'PYEOF'
 import json, sys
 from fractions import Fraction
 ranges = json.load(open(sys.argv[1])); fps = Fraction(sys.argv[2])
@@ -148,7 +148,7 @@ IDX=0
 TOTAL_KEPT=0
 while IFS=$'\t' read -r START END <&3; do
   SEG="$TMPDIR/seg_${IDX}.mp4"
-  DURATION=$(python3 -c "print(round($END - $START, 3))" </dev/null)
+  DURATION=$(${DERUSH_PY:-python3} -c "print(round($END - $START, 3))" </dev/null)
   "$FFMPEG" -nostdin -y -loglevel warning \
     -ss "$START" -to "$END" \
     -i "$SRC" \
@@ -156,7 +156,7 @@ while IFS=$'\t' read -r START END <&3; do
     -reset_timestamps 1 \
     "$SEG"
   echo "file '${SEG}'" >> "$LIST_FILE"
-  TOTAL_KEPT=$(python3 -c "print(round($TOTAL_KEPT + $DURATION, 3))" </dev/null)
+  TOTAL_KEPT=$(${DERUSH_PY:-python3} -c "print(round($TOTAL_KEPT + $DURATION, 3))" </dev/null)
   IDX=$((IDX + 1))
 done 3<<< "$PARSED"
 

@@ -1,6 +1,6 @@
 """derush studio : déposer une vidéo brute, le derush tourne, montage par le texte, rendu. Tout dans le navigateur.
 
-Usage : python3 -I edit_server.py <dossier des vidéos> <chemin de derush.sh> [--port 8790]
+Usage : "$DERUSH_PY" -I edit_server.py <dossier des vidéos> <chemin de derush.sh> [--port 8790]
 Pages : /  (accueil : déposer une vidéo, liste)   /edit?v=<STEM>  (montage par le texte)
 Les tâches longues (prep, proxy, render) tournent en fond, une par vidéo, journal dans _work/job.log.
 """

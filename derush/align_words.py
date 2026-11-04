@@ -21,6 +21,7 @@ import json
 import re
 import unicodedata
 
+import soundfile as sf
 import torch
 import torchaudio
 
@@ -61,7 +62,9 @@ def main() -> None:
 
     bundle = torchaudio.pipelines.MMS_FA
     model, tok = bundle.get_model(), bundle.get_tokenizer()
-    wav, sr = torchaudio.load(a.audio)
+    # soundfile, not torchaudio.load : torchaudio >= 2.9 delegates loading to torchcodec (not installed)
+    data_, sr = sf.read(a.audio, dtype="float32", always_2d=True)
+    wav = torch.from_numpy(data_.T.copy())
     assert sr == SR, "pass 16 kHz mono audio"
     em, ratio = emissions(model, wav)
 
