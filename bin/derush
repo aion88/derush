@@ -78,9 +78,8 @@ CMD="${1:-}"; ARG="${2:-}"
 # derush config show : la configuration résolue, jamais une clé API
 if [[ "$CMD" == config ]]; then
   if [[ "$ARG" == openai-key ]]; then
-    read -r -s -p "Clé OpenAI : " _key; echo
-    [[ -n "$_key" ]] || { echo "clé vide, rien enregistré" >&2; exit 1; }
-    security add-generic-password -U -s derush-openai -a "$USER" -w "$_key" >/dev/null || exit 1
+    # -w en dernier, sans valeur : security demande la clé lui-même (jamais dans argv, donc pas dans ps)
+    security add-generic-password -U -s derush-openai -a "$USER" -w || exit 1
     echo "clé enregistrée dans le trousseau"; exit 0
   fi
   [[ "$ARG" == show ]] || usage

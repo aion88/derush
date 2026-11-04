@@ -1,6 +1,6 @@
 """Un seul endroit choisit le moteur LLM : commande perso, Claude Code, ou OpenAI."""
 
-import json, os, shutil, subprocess, urllib.error, urllib.request
+import json, os, re, shutil, subprocess, urllib.error, urllib.request
 
 
 class NoLLM(Exception):
@@ -43,7 +43,10 @@ def _openai(prompt, key):
         with urllib.request.urlopen(req, timeout=240) as r:
             return json.load(r)["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")[:300].replace(key, "***")
+        if e.code in (401, 403):
+            raise RuntimeError(f"OpenAI HTTP {e.code} : clé OpenAI refusée") from None
+        body = e.read().decode("utf-8", "replace").replace(key, "***")
+        body = re.sub(r"sk-[A-Za-z0-9_*-]+", "sk-***", body)[:300]
         raise RuntimeError(f"OpenAI HTTP {e.code} : {body}") from None
 
 
@@ -52,10 +55,14 @@ def complete(prompt):
     engine, arg = pick(os.environ, shutil.which, keychain)
     if engine == "none":
         raise NoLLM(NO_LLM_MSG)
-    if engine == "openai":
-        return _openai(prompt, arg), "openai"
-    argv = ["sh", "-c", arg] if engine == "custom" else ["claude", "-p", "--output-format", "text"]
-    r = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=240)
+    try:
+        if engine == "openai":
+            return _openai(prompt, arg), "openai"
+        argv = ["sh", "-c", arg] if engine == "custom" else ["claude", "-p", "--output-format", "text"]
+        r = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=240)
+    except (urllib.error.URLError, OSError, subprocess.TimeoutExpired) as e:
+        reason = getattr(e, "reason", None) or e
+        raise RuntimeError(f"LLM injoignable : {reason}") from None
     if r.returncode != 0:
         raise RuntimeError(f"LLM en échec : {r.stderr.strip()[-400:]}")
     return r.stdout, engine

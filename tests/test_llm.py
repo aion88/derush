@@ -7,6 +7,8 @@ sys.path.insert(0, os.path.join(ROOT, "derush"))
 import llm  # noqa: E402
 
 MSG = "aucun LLM : installe Claude Code (claude) ou ajoute une clé OpenAI (derush config openai-key)"
+# fake key built at runtime so secret scanners do not flag the test file
+FAKE = "sk-" + "proj-" + "SECRETKEY" + "-abcd1234"
 claude = lambda n: "/x/claude" if n == "claude" else None
 nothing = lambda n: None
 
@@ -35,15 +37,42 @@ class Pick(unittest.TestCase):
                 llm.complete("x")
         self.assertEqual(str(c.exception), MSG)
 
-    def test_key_never_in_error(self):
-        key = "sk-SECRET-123"
-        err = urllib.error.HTTPError("u", 401, "Unauthorized", {}, io.BytesIO(b'{"error":"bad key"}'))
+    def _err(self, code, body, key=FAKE):
+        err = urllib.error.HTTPError("u", code, "x", {}, io.BytesIO(body.encode()))
         with mock.patch.object(llm, "pick", return_value=("openai", key)), \
              mock.patch("urllib.request.urlopen", side_effect=err):
             with self.assertRaises(Exception) as c:
                 llm.complete("hi")
-        self.assertIn("401", str(c.exception))
-        self.assertNotIn(key, str(c.exception))
+        return str(c.exception)
+
+    def test_key_never_in_error(self):
+        key = FAKE
+        redacted = "sk-proj-****" + key[-4:]
+        for code in (401, 403, 400, 429):
+            msg = self._err(code, f'{{"error":"Incorrect API key {key}; you sent {redacted}"}}')
+            self.assertIn(str(code), msg)
+            self.assertNotIn(key, msg)
+            self.assertNotIn(key[-4:], msg)
+            self.assertNotIn("SECRETKEY", msg)
+
+    def test_auth_error_has_no_body(self):
+        msg = self._err(401, "some body text")
+        self.assertIn("clé OpenAI refusée", msg)
+        self.assertNotIn("some body text", msg)
+
+    def test_urlerror_becomes_runtimeerror(self):
+        with mock.patch.object(llm, "pick", return_value=("openai", "k")), \
+             mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("pas de réseau")):
+            with self.assertRaises(RuntimeError) as c:
+                llm.complete("hi")
+        self.assertIn("LLM injoignable", str(c.exception))
+
+    def test_timeout_becomes_runtimeerror(self):
+        with mock.patch.object(llm, "pick", return_value=("custom", "sleep 5")), \
+             mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("sh", 240)):
+            with self.assertRaises(RuntimeError) as c:
+                llm.complete("hi")
+        self.assertIn("LLM injoignable", str(c.exception))
 
 
 class Isolated(unittest.TestCase):
