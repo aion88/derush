@@ -10,6 +10,8 @@ sous-titres. Cette skill embarque la rubrique de rétraction ci-dessous ; les sc
 
 Les vidéos vivent dans `$DERUSH_OUT_ROOT/<STEM>/` (défaut `~/Movies/Derush`, voir `derush config show`).
 
+Un audio seul (m4a, mp3, wav, aiff, caf) passe la même chaîne : le montage sort en `<STEM>.derush.m4a`, l'export en `<STEM>.export.m4a` (-14 LUFS) ; fcpxml, logos et look n'existent pas pour lui.
+
 ## Les trois commandes
 
 ```bash

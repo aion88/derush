@@ -19,7 +19,7 @@ The installer is safe to run again. It builds a private Python environment, link
 
 | Flag | What it does |
 |---|---|
-| `--check` | Changes nothing. Reports what is installed and what is missing (exit 1 if something is missing). |
+| `--check` | Changes nothing. Reports what is installed and what is missing (the exit code is the number of missing items, 0 when all is installed). |
 | `--models` | Downloads the speech models now (otherwise they download on first use). |
 | `--at-login` | Installs a LaunchAgent so the studio starts when you log in. |
 
@@ -28,6 +28,8 @@ If `~/.local/bin` is not in your PATH, the installer says so and gives the line 
 ## The app
 
 Open `Derush.app` (in `/Applications` or `~/Applications`). It starts the studio and opens it in your browser. Drop a raw video in the page and everything follows: transcription, cuts, text editing, render.
+
+Audio works too: give derush a voice memo or podcast take (m4a, mp3, wav, aiff, caf) and it cuts the same way; the output is `<STEM>.derush.m4a`, and export gives `<STEM>.export.m4a` at -14 LUFS (no timeline, logos or look).
 
 Tip: pin the tab. The studio lives at http://127.0.0.1:8790 (the port is `DERUSH_EDIT_PORT`). The server keeps running after you close the browser, until you log out or run `derush stop`. With `./install.sh --at-login` it also comes back after a reboot, so the pinned tab always works.
 
@@ -75,6 +77,8 @@ File: `~/.config/derush/config`, lines like `KEY=value`. Environment variables o
 | `DERUSH_OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model for the tight edit. |
 | `DERUSH_ASR` | `qwen` | Speech recognition: `qwen` or `whisper`. |
 | `DERUSH_EDIT_PORT` | `8790` | Studio port. |
+| `DERUSH_VENV` | `~/.local/share/derush/venv` | Where the Python environment lives. |
+| `DERUSH_OPEN` | `open` | Command used to open the studio URL. |
 
 Logs: `~/Library/Logs/derush/studio.log`.
 
@@ -92,7 +96,7 @@ launchctl bootout "gui/$(id -u)/com.derush.studio" 2>/dev/null   # only if you u
 rm -f ~/Library/LaunchAgents/com.derush.studio.plist              # same
 rm -f ~/.local/bin/derush
 rm -f ~/.claude/skills/derush
-rm -rf ~/.local/share/derush/venv
+rm -rf ~/.local/share/derush/venv   # or your DERUSH_VENV if you set one
 rm -rf /Applications/Derush.app ~/Applications/Derush.app
 rm -rf ~/.config/derush ~/Library/Logs/derush
 ```
@@ -128,11 +132,13 @@ L'installeur peut être relancé sans risque. Il crée un environnement Python p
 
 Ouvre `Derush.app` (dans `/Applications` ou `~/Applications`). Elle lance le studio dans ton navigateur. Dépose une vidéo brute, le reste s'enchaîne : transcription, coupes, montage par le texte, rendu.
 
+L'audio seul marche aussi (mémo vocal, podcast : m4a, mp3, wav, aiff, caf) : même coupe, sortie `<STEM>.derush.m4a`, export `<STEM>.export.m4a` à -14 LUFS (pas de timeline, de logos ni de look).
+
 Astuce : épingle l'onglet. Le studio est sur http://127.0.0.1:8790 (port `DERUSH_EDIT_PORT`). Le serveur continue de tourner quand tu fermes le navigateur, jusqu'à la fermeture de session ou `derush stop`. Avec `./install.sh --at-login`, il revient aussi après un redémarrage.
 
 ### Commandes
 
-Mêmes commandes que dans le tableau ci-dessus. L'essentiel : `derush studio` pour tout faire dans le navigateur, `derush prep <video>` puis `derush render <STEM>` puis `derush export <STEM>` en ligne de commande, `derush stop` pour arrêter le studio. `derush config show` affiche la configuration.
+Mêmes commandes que dans le tableau Commands, plus haut (en anglais). L'essentiel : `derush studio` pour tout faire dans le navigateur, `derush prep <video>` puis `derush render <STEM>` puis `derush export <STEM>` en ligne de commande, `derush stop` pour arrêter le studio. `derush config show` affiche la configuration.
 
 ### Montage serré (optionnel)
 
@@ -140,11 +146,11 @@ Dans le studio, « Proposer un montage serré » demande à un modèle de langag
 
 ### Configuration
 
-Fichier `~/.config/derush/config`, lignes `CLE=valeur`. L'environnement l'emporte sur le fichier. Clés : `DERUSH_OUT_ROOT` (défaut `~/Movies/Derush`), `DERUSH_LOOK`, `DERUSH_LLM`, `DERUSH_OPENAI_MODEL` (défaut `gpt-4o-mini`), `DERUSH_ASR` (`qwen` ou `whisper`), `DERUSH_EDIT_PORT` (défaut `8790`). La clé OpenAI n'est jamais écrite dans ce fichier : elle vit dans le trousseau.
+Fichier `~/.config/derush/config`, lignes `CLE=valeur`. L'environnement l'emporte sur le fichier. Clés : `DERUSH_OUT_ROOT` (défaut `~/Movies/Derush`), `DERUSH_LOOK`, `DERUSH_LLM`, `DERUSH_OPENAI_MODEL` (défaut `gpt-4o-mini`), `DERUSH_ASR` (`qwen` ou `whisper`), `DERUSH_EDIT_PORT` (défaut `8790`), `DERUSH_VENV` (défaut `~/.local/share/derush/venv`), `DERUSH_OPEN` (défaut `open`). La clé OpenAI n'est jamais écrite dans ce fichier : elle vit dans le trousseau.
 
 ### Désinstaller
 
-Supprime uniquement ces chemins exacts (tes vidéos dans `DERUSH_OUT_ROOT` ne sont pas touchées) : le lien `~/.local/bin/derush`, le lien `~/.claude/skills/derush`, l'environnement `~/.local/share/derush/venv`, l'app `/Applications/Derush.app` ou `~/Applications/Derush.app`, la configuration `~/.config/derush`, les logs `~/Library/Logs/derush`, et si tu as utilisé `--at-login` le LaunchAgent `~/Library/LaunchAgents/com.derush.studio.plist` (après `launchctl bootout "gui/$(id -u)/com.derush.studio"`). Les commandes exactes sont dans la section Uninstall en anglais.
+Supprime uniquement ces chemins exacts (tes vidéos dans `DERUSH_OUT_ROOT` ne sont pas touchées) : le lien `~/.local/bin/derush`, le lien `~/.claude/skills/derush`, l'environnement `~/.local/share/derush/venv` (ou ton `DERUSH_VENV`), l'app `/Applications/Derush.app` ou `~/Applications/Derush.app`, la configuration `~/.config/derush`, les logs `~/Library/Logs/derush`, et si tu as utilisé `--at-login` le LaunchAgent `~/Library/LaunchAgents/com.derush.studio.plist` (après `launchctl bootout "gui/$(id -u)/com.derush.studio"`). Les commandes exactes sont dans la section Uninstall en anglais.
 
 ### Licence
 

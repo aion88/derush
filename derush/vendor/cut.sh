@@ -112,9 +112,9 @@ fi
 mkdir -p "$(dirname "$OUTPUT")"
 
 # --- Audio-only path: same one-pass atrim/concat, same fades, no video graph ---
-# AUDIO_ONLY=1 (set by derush for a source with no video stream) or an .m4a output.
+# AUDIO_ONLY=1 (set by derush for a source with no video stream).
 # No FPS probe, no [vo]: ranges stay in seconds, output is AAC 192k m4a, faststart.
-if [[ "${AUDIO_ONLY:-0}" == "1" || "$OUTPUT" == *.m4a ]]; then
+if [[ "${AUDIO_ONLY:-0}" == "1" ]]; then
   GRAPH="$TMPDIR/graph.txt"
   TOTAL_KEPT=$(${DERUSH_PY:-python3} - "$RANGES_JSON" "$FADE_S" "$APPLY_FADE" "$GRAPH" <<'PYEOF'
 import json, sys

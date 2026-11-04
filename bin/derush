@@ -324,8 +324,8 @@ PY
   ffmpeg -nostdin -y -loglevel error -i "$MP4" -vn -ac 1 -ar 16000 "$W/out.wav"
   transcribe "$W/out.wav" "$W"
   "$DERUSH_PY" -I "$D/verify_diff.py" "$W/audio.json" "$W/out.json" > "$W/verify_diff.txt" || true
-  "$DERUSH_PY" -I - "$DUR" "$VD" "$AD" "$W/keep.json" "$W/silence_cuts.json" "$W/gap_cuts.json" "$W/filler_cuts.json" "$RC" "$W/verify_diff.txt" "$OUT/cuts.md" "$STEM" <<'PY'
-import json,sys,datetime
+  KIND="$KIND" "$DERUSH_PY" -I - "$DUR" "$VD" "$AD" "$W/keep.json" "$W/silence_cuts.json" "$W/gap_cuts.json" "$W/filler_cuts.json" "$RC" "$W/verify_diff.txt" "$OUT/cuts.md" "$STEM" <<'PY'
+import json,sys,datetime,os
 dur,vd,ad=map(float,sys.argv[1:4]); keep=json.load(open(sys.argv[4]))
 ns=len(json.load(open(sys.argv[5]))["filler_cuts"]); ng=len(json.load(open(sys.argv[6]))["filler_cuts"])
 nf=len(json.load(open(sys.argv[7]))); ret=json.load(open(sys.argv[8]))["retraction_cuts"]
@@ -337,7 +337,7 @@ lines=[f"# {stem} derush, {datetime.date.today().isoformat()}",
  "- Sujet : (à remplir)",
  f"- Durée : {fmt(dur)} -> {fmt(vd)} ({vd:.1f} s, {100*(1-vd/dur):.0f} % coupé)",
  f"- Coupes : {len(keep)-1} raccords. Couches : {ns} silences, {ng} euh cachés (trous), {nf} euh/bégaiements écrits, {len(ret)} faux départs",
- f"- Garde check_clips : 0 mot rogné. Sync A/V : {abs(vd-ad)*1000:.0f} ms. Dérive raccords : {(vd-kept)*1000/max(1,len(keep)-1):.0f} ms/raccord",
+ f"- Garde check_clips : 0 mot rogné.{'' if os.environ.get('KIND')=='audio' else f' Sync A/V : {abs(vd-ad)*1000:.0f} ms.'} Dérive raccords : {(vd-kept)*1000/max(1,len(keep)-1):.0f} ms/raccord",
  "", "## Faux départs coupés"]
 lines+= [f"- {r['start']:.1f} -> {r['end']:.1f} s : « {r['cue_text']} » ; {r['rationale']}" for r in ret] or ["- aucun"]
 lines+=["", "## Diff transcript source -> sortie (à relire : chaque delete doit être voulu)", "```"]+diff+["```"]
