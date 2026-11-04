@@ -258,6 +258,8 @@ class H(BaseHTTPRequestHandler):
                     "text/html; charset=utf-8",
                     open(os.path.join(HERE, "edit.html"), "rb").read(),
                 )
+            if path == "/health":
+                return self._send(200, "text/plain; charset=utf-8", b"derush")
             if path == "/videos":
                 return self._json(videos())
             if path == "/job":

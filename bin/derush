@@ -9,8 +9,9 @@
 #   derush align  <audio16k.wav> <asr.json> --out <aligned.json>   alignement mot à mot (sans STEM)
 #   derush config openai-key  enregistre la clé OpenAI dans le trousseau (saisie masquée)
 #   derush config show        la configuration résolue (~/.config/derush/config, l'environnement l'emporte)
-#   derush studio             tout dans le navigateur : déposer une vidéo brute, derush, montage
+#   derush studio [--no-open]  tout dans le navigateur : déposer une vidéo brute, derush, montage
 #                             par le texte, montage serré proposé, rendu
+#   derush stop               arrête le studio lancé par derush studio
 #   derush edit   <STEM>      montage par le texte : page locale, tu barres des mots, Valider écrit
 #                             retraction_cuts.json (+ restore.json), puis derush render. Proxy dans _work/
 #   derush render <STEM>      fusion + garde + coupe + vérification → <STEM>.derush.mp4 + cuts.md
@@ -88,11 +89,49 @@ if [[ "$CMD" == config ]]; then
   done
   exit 0
 fi
-# derush studio : tout dans le navigateur (déposer une vidéo brute, derush, montage par le texte, rendu)
+# Cycle de vie du studio : /health dit « derush » (distingue notre serveur d'un autre programme sur le port).
+STUDIO_LOGS="$HOME/Library/Logs/derush"
+studio_health() { curl -s -m 2 "http://127.0.0.1:${DERUSH_EDIT_PORT:-8790}/health" 2>/dev/null || true; }
+studio_port_taken() { nc -z 127.0.0.1 "${DERUSH_EDIT_PORT:-8790}" 2>/dev/null; }
+# Rend 0 si le studio derush répond déjà, 1 si le port est libre ; sort en 3 si un autre programme l'occupe.
+studio_up() {
+  [[ "$(studio_health)" == derush ]] && return 0
+  if studio_port_taken; then
+    echo "le port ${DERUSH_EDIT_PORT:-8790} est pris par un autre programme (DERUSH_EDIT_PORT pour en changer)" >&2; exit 3
+  fi
+  return 1
+}
+# derush studio [--no-open] : tout dans le navigateur (déposer une vidéo brute, derush, montage par le texte, rendu).
+# Détaché (nohup) : journal studio.log, pid studio.pid. Un studio déjà là est réutilisé, jamais un second.
 if [[ "$CMD" == studio ]]; then
-  PORT="${DERUSH_EDIT_PORT:-8790}"; mkdir -p "$RUSHS"
-  (sleep 1; "$OPEN" "http://127.0.0.1:$PORT") &
-  exec "$DERUSH_PY" -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT"
+  PORT="${DERUSH_EDIT_PORT:-8790}"; mkdir -p "$RUSHS" "$STUDIO_LOGS"
+  NOOPEN=0; for _a in "${@:2}"; do [[ "$_a" == --no-open ]] && NOOPEN=1; done
+  if ! studio_up; then
+    nohup "$DERUSH_PY" -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT" \
+      </dev/null >>"$STUDIO_LOGS/studio.log" 2>&1 &
+    SPID=$!; echo "$SPID" > "$STUDIO_LOGS/studio.pid"; disown "$SPID" 2>/dev/null || true
+    for _ in $(seq 1 40); do
+      [[ "$(studio_health)" == derush ]] && break
+      kill -0 "$SPID" 2>/dev/null || { echo "le studio s'est arrêté au démarrage : voir $STUDIO_LOGS/studio.log" >&2; exit 1; }
+      sleep 0.5
+    done
+    [[ "$(studio_health)" == derush ]] || { echo "le studio ne répond pas après 20 s : voir $STUDIO_LOGS/studio.log" >&2; exit 1; }
+  fi
+  [[ "$NOOPEN" == 1 ]] || "$OPEN" "http://127.0.0.1:$PORT"
+  exit 0
+fi
+# derush stop : arrête NOTRE serveur (le pid doit être un edit_server.py), jamais un autre processus.
+if [[ "$CMD" == stop ]]; then
+  PIDF="$STUDIO_LOGS/studio.pid"
+  if [[ -f "$PIDF" ]]; then
+    SPID="$(cat "$PIDF")"
+    if [[ "$SPID" =~ ^[0-9]+$ ]] && ps -p "$SPID" -o command= 2>/dev/null | grep -q edit_server.py; then
+      kill "$SPID" 2>/dev/null || true
+      for _ in $(seq 1 20); do kill -0 "$SPID" 2>/dev/null || break; sleep 0.25; done
+    fi
+    rm -f "$PIDF"
+  fi
+  exit 0
 fi
 # derush align <audio16k.wav> <asr.json> --out <aligned.json> : alignement mot à mot, sans STEM.
 # Un seul endroit construit l'appel : cmd_prep passe aussi par run_align.
@@ -294,8 +333,11 @@ cmd_proxy() {
 cmd_edit() {
   [[ -f "$W/aligned.json" ]] || { echo "pas de prep pour $STEM" >&2; exit 1; }
   cmd_proxy
-  local PORT="${DERUSH_EDIT_PORT:-8790}"
-  (sleep 1; "$OPEN" "http://127.0.0.1:$PORT/edit?v=$("$DERUSH_PY" -I -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$STEM")") &
+  local PORT="${DERUSH_EDIT_PORT:-8790}" URL
+  URL="http://127.0.0.1:$PORT/edit?v=$("$DERUSH_PY" -I -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$STEM")"
+  # Un studio déjà lancé sert la page : on ouvre dessus, jamais un second serveur.
+  if studio_up; then "$OPEN" "$URL"; return 0; fi
+  (sleep 1; "$OPEN" "$URL") &
   "$DERUSH_PY" -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT"
 }
 
