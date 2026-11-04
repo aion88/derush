@@ -50,6 +50,10 @@ assert_eq audio "$("$D" kind "$M4A")" "is_audio_only: m4a"
 assert_eq audio "$("$D" kind "$T/in/cover.mp3")" "is_audio_only: mp3 with attached cover"
 assert_eq video "$("$D" kind "$T/in/clip.mp4")" "is_audio_only: mp4 with video is not audio"
 assert_eq 1 "$(nstreams "$T/in/cover.mp3" v)" "fixture: the mp3 really carries a cover stream"
+# ffprobe prints "0," (trailing comma) for a video stream with side data (camera .mov with rotation):
+# the stub reproduces that exact line; the real file that exposed it was a 4K HEVC iPhone-style .mov.
+mkdir -p "$T/stub"; printf '#!/bin/bash\ncase "$*" in *attached_pic*) echo "0,";; *) exec "$(PATH="${PATH#$(dirname "$0"):}" command -v ffprobe)" "$@";; esac\n' > "$T/stub/ffprobe"; chmod +x "$T/stub/ffprobe"
+assert_eq video "$(PATH="$T/stub:$PATH" "$D" kind "$T/in/clip.mp4")" "is_audio_only: ffprobe line '0,' still means video"
 
 # 2. prep + render
 p="$("$D" prep "$M4A" 2>&1)"; rc=$?

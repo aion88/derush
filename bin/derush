@@ -141,9 +141,10 @@ if [[ "$CMD" == stop ]]; then
   exit 0
 fi
 # Un seul endroit décide : source audio seule = aucun flux image, hors pochette (attached_pic=1).
+# sed : ffprobe écrit « 0, » (virgule en trop) quand le flux porte des données annexes (rotation d'un .mov de caméra).
 # prep écrit le verdict dans _work/kind ; tout le reste (shell, studio) lit ce fichier.
 is_audio_only() { # <fichier> : 0 si audio seul
-  local n; n=$(ffprobe -v error -select_streams v -show_entries stream_disposition=attached_pic -of csv=p=0 "$1" 2>/dev/null | grep -c '^0$' || true)
+  local n; n=$(ffprobe -v error -select_streams v -show_entries stream_disposition=attached_pic -of csv=p=0 "$1" 2>/dev/null | sed 's/,.*//' | grep -c '^0$' || true)
   [[ "$n" == 0 ]]
 }
 if [[ "$CMD" == kind ]]; then
