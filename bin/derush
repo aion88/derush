@@ -6,6 +6,7 @@
 #                 range la source dans $DERUSH_OUT_ROOT/<STEM>/, puis audio, silences, transcription (qwen, whisper en secours),
 #                 alignement, euh, trous. Écrit transcript.txt. ~1.5x la durée de la vidéo.
 #   derush words  <STEM>      transcript mot à mot avec bornes, pour l'étape faux départs
+#   derush align  <audio16k.wav> <asr.json> --out <aligned.json>   alignement mot à mot (sans STEM)
 #   derush config show        la configuration résolue (~/.config/derush/config, l'environnement l'emporte)
 #   derush studio             tout dans le navigateur : déposer une vidéo brute, derush, montage
 #                             par le texte, montage serré proposé, rendu
@@ -86,6 +87,13 @@ if [[ "$CMD" == studio ]]; then
   PORT="${DERUSH_EDIT_PORT:-8790}"; mkdir -p "$RUSHS"
   (sleep 1; "$OPEN" "http://127.0.0.1:$PORT") &
   exec "$DERUSH_PY" -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT"
+fi
+# derush align <audio16k.wav> <asr.json> --out <aligned.json> : alignement mot à mot, sans STEM.
+# Un seul endroit construit l'appel : cmd_prep passe aussi par run_align.
+run_align() { "$DERUSH_PY" "$D/align_words.py" "$@"; }
+if [[ "$CMD" == align ]]; then
+  [[ $# -ge 3 ]] || usage
+  shift; run_align "$@"; exit $?
 fi
 case "$CMD" in studio|stop|config|align) ;; *) [[ -z "$CMD" || -z "$ARG" ]] && usage;; esac
 shift 2
@@ -177,7 +185,7 @@ cmd_prep() {
   log "2/5 silences : $(jlen "$W/silence_cuts.json" filler_cuts)"
   transcribe "$W/audio.wav" "$W"
   log "3/5 transcription ok"
-  "$DERUSH_PY" "$D/align_words.py" "$W/audio.wav" "$W/audio.json" --out "$W/aligned.json"
+  run_align "$W/audio.wav" "$W/audio.json" --out "$W/aligned.json"
   log "3b/5 alignement ok"
   # Le seuil de silence doit passer SOUS chaque mot. IMG_4594 (2026-10-11) : 110 mots sur 806
   # piquaient sous -35 dB (apartés murmurés, plancher -68 dB), coupés entiers, garde verte.
