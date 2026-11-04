@@ -279,7 +279,7 @@ function showProps() {
   if (P.length) { $("#accAll").onclick = () => acc(P.map((_, k) => k)); $("#rejAll").onclick = () => rej(P.map((_, k) => k)); }
 }
 $("#propose").onclick = async () => {
-  $("#propose").disabled = true; $("#status").textContent = "Claude lit le transcript…";
+  $("#propose").disabled = true; $("#status").textContent = "Le LLM lit le transcript…";
   const t0 = Date.now();
   const r = await fetch("/propose" + q, { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ keep_idx: W.filter(w => w.ai >= 0 && (w.st === "kept" || w.st === "restored")).map(w => w.ai),
@@ -289,7 +289,7 @@ $("#propose").onclick = async () => {
   const pos = {}; W.forEach(w => { if (w.ai >= 0) pos[w.ai] = w.i; else if (w.gap) pos[w.pi] = w.i; });
   P = r.proposals.filter(p => pos[p.from] != null && pos[p.to] != null).map(p => ({ ...p, from: pos[p.from], to: pos[p.to] }));
   showProps();
-  $("#status").textContent = `${P.length} coupes proposées en ${Math.round((Date.now() - t0) / 1000)} s`;
+  $("#status").textContent = `${P.length} coupes proposées en ${Math.round((Date.now() - t0) / 1000)} s${r.engine ? " (moteur : " + r.engine + ")" : ""}`;
 };
 $("#save").onclick = async () => {
   const body = { retraction_cuts: cuts(), restore: W.filter(w => w.st === "restored").map(w => {

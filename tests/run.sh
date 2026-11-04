@@ -7,4 +7,7 @@ for t in test_*.sh; do
   echo "== $t"
   bash "$t" || rc=1
 done
+echo "== test_*.py"
+DERUSH_PY="${DERUSH_PY:-$HOME/.local/share/derush/venv/bin/python}"
+"$DERUSH_PY" -m unittest discover -s . -p 'test_*.py' || rc=1
 exit $rc

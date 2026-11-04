@@ -2,10 +2,13 @@
 
 Usage : python3 -I propose_cuts.py <dossier videos/STEM>   (lit stdin : {"keep_idx":[indices de mots gardés]})
 Sortie stdout : {"proposals":[{"from":i,"to":j,"reason":"...","text":"..."}]}, indices = mots de aligned.json.
-LLM : $DERUSH_LLM (commande, prompt sur stdin) sinon `claude -p`.
+LLM : $DERUSH_LLM (commande, prompt sur stdin), sinon `claude -p`, sinon OpenAI (voir llm.py).
 """
 
-import json, os, re, shutil, subprocess, sys
+import json, os, re, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import llm  # noqa: E402
 
 OUT = os.path.abspath(sys.argv[1])
 W = os.path.join(OUT, "_work")
@@ -42,20 +45,6 @@ Transcript :
 """
 
 
-def llm(prompt):
-    cmd = os.environ.get("DERUSH_LLM")
-    if cmd:
-        argv = ["sh", "-c", cmd]
-    elif shutil.which("claude"):
-        argv = ["claude", "-p", "--output-format", "text"]
-    else:
-        sys.exit("aucun LLM : installe Claude Code (claude) ou définis DERUSH_LLM")
-    r = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=240)
-    if r.returncode != 0:
-        sys.exit(f"LLM en échec : {r.stderr.strip()[-400:]}")
-    return r.stdout
-
-
 def main():
     a = json.load(open(os.path.join(W, "aligned.json")))
     ws = [w for s in a["segments"] for w in s.get("words", [])]
@@ -77,7 +66,10 @@ def main():
             line = []
     if line:
         lines.append(" ".join(line))
-    raw = llm(RUBRIC + "\n".join(lines))
+    try:
+        raw, engine = llm.complete(RUBRIC + "\n".join(lines))
+    except (llm.NoLLM, RuntimeError) as e:
+        sys.exit(str(e))
     m = re.search(r"\{.*\}", raw, re.S)
     if not m:
         sys.exit(f"réponse LLM illisible : {raw[:300]}")
@@ -97,7 +89,7 @@ def main():
         clean.append(p)
     for p in clean:
         del p["_a"], p["_b"]
-    res = {"proposals": clean}
+    res = {"proposals": clean, "engine": engine}
     json.dump(res, open(os.path.join(W, "propositions.json"), "w"), ensure_ascii=False, indent=1)
     print(json.dumps(res, ensure_ascii=False))
 

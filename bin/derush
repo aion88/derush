@@ -7,6 +7,7 @@
 #                 alignement, euh, trous. Écrit transcript.txt. ~1.5x la durée de la vidéo.
 #   derush words  <STEM>      transcript mot à mot avec bornes, pour l'étape faux départs
 #   derush align  <audio16k.wav> <asr.json> --out <aligned.json>   alignement mot à mot (sans STEM)
+#   derush config openai-key  enregistre la clé OpenAI dans le trousseau (saisie masquée)
 #   derush config show        la configuration résolue (~/.config/derush/config, l'environnement l'emporte)
 #   derush studio             tout dans le navigateur : déposer une vidéo brute, derush, montage
 #                             par le texte, montage serré proposé, rendu
@@ -76,6 +77,12 @@ jlen() { "$DERUSH_PY" -I -c "import json,sys;d=json.load(open(sys.argv[1]));prin
 CMD="${1:-}"; ARG="${2:-}"
 # derush config show : la configuration résolue, jamais une clé API
 if [[ "$CMD" == config ]]; then
+  if [[ "$ARG" == openai-key ]]; then
+    read -r -s -p "Clé OpenAI : " _key; echo
+    [[ -n "$_key" ]] || { echo "clé vide, rien enregistré" >&2; exit 1; }
+    security add-generic-password -U -s derush-openai -a "$USER" -w "$_key" >/dev/null || exit 1
+    echo "clé enregistrée dans le trousseau"; exit 0
+  fi
   [[ "$ARG" == show ]] || usage
   for k in DERUSH_OUT_ROOT DERUSH_PY DERUSH_ASR DERUSH_LLM DERUSH_LOOK DERUSH_OPENAI_MODEL DERUSH_EDIT_PORT; do
     echo "$k=${!k}"
