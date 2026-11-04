@@ -52,7 +52,14 @@ assert_eq 1 "$ok" "studio job (derush proxy) produced proxy.mp4"
 
 # 3b. detached into its own session: a launcher that dies with its process group leaves the studio up
 "$D" stop >/dev/null 2>&1
-bash -c 'set -m; "$0" studio --no-open >/dev/null 2>&1; kill -9 -- -$$ 2>/dev/null' "$D" >/dev/null 2>&1
+# The launcher leads its own group (pgid = its pid) and stays alive after starting the studio, so
+# that group exists and WOULD hold the server if it were not detached. kill errors are not hidden.
+"$DERUSH_PY" -c 'import os,sys;os.setpgid(0,0);os.execvp(sys.argv[1],sys.argv[1:])' \
+  bash -c '"$0" studio --no-open >/dev/null 2>&1; sleep 30' "$D" >/dev/null 2>&1 &
+LPG=$!
+for _ in $(seq 1 40); do [ "$(curl -s "http://127.0.0.1:$PORT/health")" = derush ] && break; sleep 0.5; done
+assert_eq derush "$(curl -s "http://127.0.0.1:$PORT/health")" "studio up from the launcher"
+kill -9 -- -"$LPG"; assert_eq 0 "$?" "launcher group killed"
 sleep 1
 assert_eq derush "$(curl -s "http://127.0.0.1:$PORT/health")" "studio survives its launcher's process group"
 
