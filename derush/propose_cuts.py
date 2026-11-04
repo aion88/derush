@@ -2,7 +2,7 @@
 
 Usage : python3 -I propose_cuts.py <dossier videos/STEM>   (lit stdin : {"keep_idx":[indices de mots gardés]})
 Sortie stdout : {"proposals":[{"from":i,"to":j,"reason":"...","text":"..."}]}, indices = mots de aligned.json.
-LLM : $DERUSH_LLM (commande, prompt sur stdin) sinon ~/bin/llm-fallback sinon `claude -p`.
+LLM : $DERUSH_LLM (commande, prompt sur stdin) sinon `claude -p`.
 """
 
 import json, os, re, shutil, subprocess, sys
@@ -46,11 +46,6 @@ def llm(prompt):
     cmd = os.environ.get("DERUSH_LLM")
     if cmd:
         argv = ["sh", "-c", cmd]
-    elif os.access(os.path.expanduser("~/bin/llm-fallback"), os.X_OK):
-        argv = [
-            os.path.expanduser("~/bin/llm-fallback"),
-            "Suis les instructions du texte fourni.",
-        ]
     elif shutil.which("claude"):
         argv = ["claude", "-p", "--output-format", "text"]
     else:

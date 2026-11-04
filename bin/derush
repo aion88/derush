@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# derush.sh — une commande pour tout le mécanique du dérush. Alias : ~/bin/derush
+# derush — une commande pour tout le mécanique du dérush.
 #
 #   derush prep   <video> [--lang fr|en] [--noise -35] [--min 0.45] [--pad 0.12]
 #                 (--noise est un plafond : word_peaks.py le descend si un mot aligné pique dessous)
-#                 range la source dans videos/<STEM>/, puis audio, silences, transcription (qwen, whisper en secours),
+#                 range la source dans $DERUSH_OUT_ROOT/<STEM>/, puis audio, silences, transcription (qwen, whisper en secours),
 #                 alignement, euh, trous. Écrit transcript.txt. ~1.5x la durée de la vidéo.
 #   derush words  <STEM>      transcript mot à mot avec bornes, pour l'étape faux départs
+#   derush config show        la configuration résolue (~/.config/derush/config, l'environnement l'emporte)
 #   derush studio             tout dans le navigateur : déposer une vidéo brute, derush, montage
 #                             par le texte, montage serré proposé, rendu
 #   derush edit   <STEM>      montage par le texte : page locale, tu barres des mots, Valider écrit
@@ -18,9 +19,9 @@
 #   derush export <STEM>      <STEM>.reel.mp4 : 1080x1920, 30 fps, -14 LUFS, faststart, prêt à poster
 #   derush all    <video>     prep puis render puis export, avec 0 faux départ (rapide, moins propre)
 #
-# <STEM> = le nom du dossier dans videos/ (IMG_4567). Un chemin de vidéo marche aussi partout.
+# <STEM> = le nom du dossier dans $DERUSH_OUT_ROOT (IMG_4567). Un chemin de vidéo marche aussi partout.
 #
-# Dossier : ~/Social Medias/videos/<STEM>/
+# Dossier : $DERUSH_OUT_ROOT/<STEM>/ (défaut ~/Movies/Derush)
 #   <STEM>.MOV             la source, déplacée ici par prep (même volume : instantané, réversible)
 #   <STEM>.derush.mp4      le montage, qualité master (fps et débit de la source)
 #   <STEM>.reel.mp4        la version à poster (export)
@@ -37,27 +38,58 @@
 
 set -euo pipefail
 
-# D et SM se déduisent de l'emplacement réel du script : ~/bin/derush et ~/.claude/skills/derush
-# sont des liens vers le dépôt Social Medias (.claude/skills/derush/scripts/derush.sh).
-D="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
-SM="$(cd "$D/../../../.." && pwd)"
-S=~/.claude/skills/video-ingest/scripts   # skill globale, hors dépôt (outils/DEPENDANCES.md)
-WHISPER="${WHISPER:-$HOME/Library/Python/3.12/bin/whisper}"
-[[ -x "$WHISPER" ]] || WHISPER="$(command -v whisper || echo "$WHISPER")"
-RUSHS="${DERUSH_OUT_ROOT:-$SM/videos}"
+# ROOT se déduit de l'emplacement réel du script (liens suivis) : bin/derush est dans <ROOT>/bin.
+ROOT="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
+D="$ROOT/derush"
+V_="$D/vendor"
+# Finder et launchd n'ont pas Homebrew dans le PATH.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+# Configuration : ~/.config/derush/config (KEY=value, shell). L'environnement l'emporte sur le
+# fichier, une valeur vide compte comme absente, chaque clé est exportée aux processus fils.
+DERUSH_CONFIG="${DERUSH_CONFIG:-$HOME/.config/derush/config}"
+CFG_KEYS="DERUSH_OUT_ROOT DERUSH_VENV DERUSH_PY DERUSH_ASR DERUSH_LLM DERUSH_LOOK DERUSH_OPENAI_MODEL DERUSH_EDIT_PORT DERUSH_OPEN"
+for _k in $CFG_KEYS; do printf -v "_env_$_k" '%s' "${!_k:-}"; done
+if [[ -f "$DERUSH_CONFIG" ]]; then set -a; . "$DERUSH_CONFIG"; set +a; fi
+for _k in $CFG_KEYS; do _v="_env_$_k"; [[ -n "${!_v}" ]] && export "$_k=${!_v}"; done
+unset _k _v
+expand_tilde() { case "$1" in "~") echo "$HOME";; "~/"*) echo "$HOME/${1#\~/}";; *) echo "$1";; esac; }
+for _k in DERUSH_OUT_ROOT DERUSH_VENV DERUSH_PY DERUSH_LOOK; do
+  [[ -n "${!_k:-}" ]] && export "$_k=$(expand_tilde "${!_k}")"
+done
+unset _k
+export DERUSH_OUT_ROOT="${DERUSH_OUT_ROOT:-$HOME/Movies/Derush}"
+export DERUSH_VENV="${DERUSH_VENV:-$HOME/.local/share/derush/venv}"
+export DERUSH_PY="${DERUSH_PY:-$DERUSH_VENV/bin/python}"
+export DERUSH_ASR="${DERUSH_ASR:-qwen}"
+export DERUSH_OPENAI_MODEL="${DERUSH_OPENAI_MODEL:-gpt-4o-mini}"
+export DERUSH_EDIT_PORT="${DERUSH_EDIT_PORT:-8790}"
+export DERUSH_LLM="${DERUSH_LLM:-}" DERUSH_LOOK="${DERUSH_LOOK:-}"
+RUSHS="$DERUSH_OUT_ROOT"
+OPEN="${DERUSH_OPEN:-open}"
+# Whisper (secours) : $WHISPER, sinon celui du PATH. Remplacé par le venv dans une tâche suivante.
+WHISPER="${WHISPER:-$(command -v whisper || true)}"
 
 usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 log() { printf '[derush %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 jlen() { python3 -I -c "import json,sys;d=json.load(open(sys.argv[1]));print(len(d[sys.argv[2]] if len(sys.argv)>2 else d))" "$@"; }
 
 CMD="${1:-}"; ARG="${2:-}"
+# derush config show : la configuration résolue, jamais une clé API
+if [[ "$CMD" == config ]]; then
+  [[ "$ARG" == show ]] || usage
+  for k in DERUSH_OUT_ROOT DERUSH_PY DERUSH_ASR DERUSH_LLM DERUSH_LOOK DERUSH_OPENAI_MODEL DERUSH_EDIT_PORT; do
+    echo "$k=${!k}"
+  done
+  exit 0
+fi
 # derush studio : tout dans le navigateur (déposer une vidéo brute, derush, montage par le texte, rendu)
 if [[ "$CMD" == studio ]]; then
   PORT="${DERUSH_EDIT_PORT:-8790}"; mkdir -p "$RUSHS"
-  (sleep 1; open "http://127.0.0.1:$PORT") &
-  exec python3 -I "$D/edit_server.py" "$RUSHS" "$D/derush.sh" --port "$PORT"
+  (sleep 1; "$OPEN" "http://127.0.0.1:$PORT") &
+  exec python3 -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT"
 fi
-[[ -z "$CMD" || -z "$ARG" ]] && usage
+case "$CMD" in studio|stop|config|align) ;; *) [[ -z "$CMD" || -z "$ARG" ]] && usage;; esac
 shift 2
 
 LANG_=fr; NOISE=-35; MIN=0.45; PAD=0.12; FROM=""
@@ -72,7 +104,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Résolution : un fichier → sa source ; un STEM → la source rangée dans videos/<STEM>/
+# Résolution : un fichier → sa source ; un STEM → la source rangée dans $DERUSH_OUT_ROOT/<STEM>/
 if [[ -f "$ARG" ]]; then
   V="$(cd "$(dirname "$ARG")" && pwd)/$(basename "$ARG")"
   STEM="$(basename "${V%.*}")"
@@ -100,7 +132,7 @@ transcribe() { # <wav> <outdir> → <outdir>/<wavstem>.json
   local json="$2/$(basename "${1%.*}").json"
   if [[ "${DERUSH_ASR:-qwen}" == qwen ]]; then
     if [[ ! -x "$QWEN_PY" ]]; then
-      log "qwen absent ($QWEN_PY) → whisper. Installer : outils/installer.sh"
+      log "qwen absent ($QWEN_PY) → whisper. Installer : install.sh"
     elif "$QWEN_PY" "$D/transcribe_qwen.py" "$1" --lang "$LANG_" --out "$json" >"$2/asr.log" 2>"$2/qwen.err"; then
       log "transcription qwen3-asr : $(cat "$2/asr.log")"; return 0
     else
@@ -156,7 +188,7 @@ cmd_prep() {
     python3 -I "$D/silence_cuts.py" "$W/audio.wav" --out "$W/silence_cuts.json" --noise "$NOISE2" --min "$MIN" --pad "$PAD"
     log "2/5 silences recalculés à $NOISE2 dB : $(jlen "$W/silence_cuts.json" filler_cuts) (des mots passaient sous $NOISE dB, voir word_peaks ci-dessus)"
   fi
-  python3 -I "$S/detect_fillers.py" --segments "$W/aligned.json" --out "$W/filler_cuts.json"
+  python3 -I "$V_/detect_fillers.py" --segments "$W/aligned.json" --out "$W/filler_cuts.json"
   python3 -I "$D/gap_fillers.py" --words "$W/aligned.json" --out "$W/gap_cuts.json"
   log "4-5/5 euh écrits : $(jlen "$W/filler_cuts.json"), trous : $(jlen "$W/gap_cuts.json" filler_cuts)"
   write_transcript "$W/aligned.json" "$OUT/transcript.txt"
@@ -196,7 +228,7 @@ json.dump(c,open(f"{w}/all_cuts.json","w"))
 PY
   local TG; TG=$(python3 -I "$D/tail_guard.py" "$W") || { log "7a GARDE EN ECHEC (tail_guard.py). Rien rendu."; exit 1; }
   log "7a $TG"
-  python3 -I "$S/prune.py" --segments "$W/aligned.json" --duration "$DUR" \
+  python3 -I "$V_/prune.py" --segments "$W/aligned.json" --duration "$DUR" \
     --filler-cuts "$W/all_cuts.json" --retraction-cuts "$RC" \
     --min-silence-gap 999 --min-keep 0.1 --out "$W/keep.json" >/dev/null
   cp "$W/keep.json" "$OUT/keep.json"
@@ -205,7 +237,7 @@ PY
     || { log "7b GARDE ROUGE : un mot gardé serait rogné. Rien rendu."; exit 1; }
   log "7b garde verte"
   local MP4="$OUT/$STEM.derush.mp4"
-  "$S/cut.sh" "$V" "$W/keep.json" "$MP4" 2>"$W/cut.err" | tail -1 \
+  "$V_/cut.sh" "$V" "$W/keep.json" "$MP4" 2>"$W/cut.err" | tail -1 \
     || { log "8 COUPE EN ECHEC : $W/cut.err"; tail -5 "$W/cut.err" >&2; exit 1; }
   log "8 coupe ok"
   local VD AD
@@ -251,15 +283,15 @@ cmd_edit() {
   [[ -f "$W/aligned.json" ]] || { echo "pas de prep pour $STEM" >&2; exit 1; }
   cmd_proxy
   local PORT="${DERUSH_EDIT_PORT:-8790}"
-  (sleep 1; open "http://127.0.0.1:$PORT/edit?v=$STEM") &
-  python3 -I "$D/edit_server.py" "$RUSHS" "$D/derush.sh" --port "$PORT"
+  (sleep 1; "$OPEN" "http://127.0.0.1:$PORT/edit?v=$STEM") &
+  python3 -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT"
 }
 
-# L'aperçu à valider porte le look fixé (outils/looks/kaizn.cube) : on valide l'image qui sera
+# L'aperçu à valider porte le look fixé ($DERUSH_LOOK, un .cube) : on valide l'image qui sera
 # publiée, pas la caméra brute. Export ne le lit pas, il reste un fichier de relecture.
 cmd_apercu() {
-  local cube="$SM/outils/looks/kaizn.cube"
-  [[ -f "$cube" ]] || { log "aperçu : aucun look fixé, $STEM.derush.mp4 est l'image brute"; return 0; }
+  local cube="${DERUSH_LOOK:-}"
+  [[ -n "$cube" && -f "$cube" ]] || { log "aperçu : aucun look fixé, $STEM.derush.mp4 est l'image brute"; return 0; }
   ffmpeg -loglevel error -y -i "$OUT/$STEM.derush.mp4" -vf "lut3d=$cube,scale=1080:1920" \
     -c:v libx264 -crf 20 -preset fast -c:a copy "$OUT/$STEM.apercu-look.mp4" \
     && log "aperçu avec le look : $OUT/$STEM.apercu-look.mp4 (c'est lui qu'on valide)"

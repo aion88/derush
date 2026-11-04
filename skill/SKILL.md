@@ -1,22 +1,19 @@
 ---
 name: derush
-description: "Dérusher une vidéo parlée (face caméra, vocal, screen rec) : couper les silences, les euh/hum/mmh, les bégaiements, les faux départs et les phrases reprises. Sortie = un MP4 monté propre, un export prêt à poster et le rapport des coupes, dans ~/Social Medias/videos/<IMG>/. FR/EN. Triggers: derush, dérushe, coupe les silences, enlève les euh, jump cut, nettoie ma vidéo, monte ma vidéo."
+description: "Dérusher une vidéo parlée (face caméra, vocal, screen rec) : couper les silences, les euh/hum/mmh, les bégaiements, les faux départs et les phrases reprises. Sortie = un MP4 monté propre, un export prêt à poster et le rapport des coupes, dans $DERUSH_OUT_ROOT/<IMG>/. FR/EN. Triggers: derush, dérushe, coupe les silences, enlève les euh, jump cut, nettoie ma vidéo, monte ma vidéo."
 ---
 
 # derush
 
 Montage « jump cut » automatique d'une prise parlée. Ne fait QUE la coupe et l'export : pas de
-sous-titres, pas de note KB, pas de Telegram. Pour ça, c'est `video-ingest`, dont cette skill
-réutilise les scripts (fillers, prune, cut) et la rubrique de rétraction.
+sous-titres, pas de note KB, pas de Telegram. Cette skill embarque ses propres scripts (fillers, prune, cut) et la rubrique de rétraction ci-dessous.
 
-Le dossier, la spec de sortie et les conventions vivent dans `~/Social Medias/videos/README.md`.
-Le lire une fois. L'index des vidéos : `~/Social Medias/videos/INDEX.md`, une ligne à ajouter
-par vidéo montée.
+Les vidéos vivent dans `$DERUSH_OUT_ROOT/<STEM>/` (défaut `~/Movies/Derush`, voir `derush config show`).
 
 ## Les trois commandes
 
 ```bash
-derush prep "<video>"          # range la source dans videos/<STEM>/, audio, silences, transcription (qwen),
+derush prep "<video>"          # range la source dans $DERUSH_OUT_ROOT/<STEM>/, audio, silences, transcription (qwen),
                                # alignement, euh, trous, contrôle des trous. ~1.5x la durée
 derush words <STEM>            # transcript mot à mot avec bornes : l'étape 6 se lit là-dessus
 derush studio                  # TOUT dans le navigateur : déposer une vidéo brute, derush, montage par le
@@ -32,15 +29,15 @@ derush fcpxml <STEM>           # <STEM>.fcpxml, écrit aussi par render : timeli
 derush export <STEM>           # <STEM>.reel.mp4 : 1080x1920, 30 fps, -14 LUFS, prêt à poster
 ```
 
-Logos (`derush logos`) : `videos/<STEM>/logos.json` = `{"cues":[{"logo":"canva","t":14.27}]}`, `t` lu
-dans `derush words` (instant SOURCE, converti par `keep.json`). Fichiers dans `videos/_logos/src/<logo>.svg|png`
+Logos (`derush logos`) : `$DERUSH_OUT_ROOT/<STEM>/logos.json` = `{"cues":[{"logo":"canva","t":14.27}]}`, `t` lu
+dans `derush words` (instant SOURCE, converti par `keep.json`). Fichiers dans `$DERUSH_OUT_ROOT/_logos/src/<logo>.svg|png`
 (détourés, fond transparent ; sans fichier, carte texte). Carte blanche arrondie 30 % de largeur, en haut à
 GAUCHE par défaut (face caméra : le visage occupe le tiers haut centré), 2 s, fondu 0,2 s ; une liste dite
 vite range les cartes côte à côte. Contrôle : extraire une image par cue et la REGARDER. IMG_4596 (2026-10-11) :
 Canva ×2, Microsoft 365, Gamma, Higgsfield (« Xfield » dans le transcript : lui demander les noms, whisper
 n'en connaît pas la moitié).
 
-`derush` = `~/bin/derush` → `scripts/derush.sh`. Options de `prep` : `--lang en`,
+`derush` = `bin/derush` du dépôt. Options de `prep` : `--lang en`,
 `--noise -40` (voix faible), `--min 0.3 --pad 0.08` (plus serré), `--min 0.8 --pad 0.2` (plus posé).
 Deux vidéos : lancer les `prep` à la suite en arrière-plan, lire les `words` pendant ce temps.
 
@@ -54,15 +51,14 @@ Deux vidéos : lancer les `prep` à la suite en arrière-plan, lire les `words` 
 | euh / mmh NON écrits (la majorité) | trou non silencieux entre 2 mots (`gap_fillers.py`) | script |
 | faux départs, phrase reprise, « non attends », mot abandonné, consignes dites à la caméra | lecture du transcript | TOI, étape 6 |
 
-Prime directive héritée de `video-ingest` : **une coupe fausse de vrai contenu est la pire
+Prime directive de la skill : **une coupe fausse de vrai contenu est la pire
 faute.** Dans le doute, on garde, et on le dit dans `cuts.md` (« gardé exprès »).
 
 ## Étape 6, la seule à la main : les faux départs
 
 Lis `derush words <STEM>` (mot@début-fin, `?` = borne interpolée, pas alignée) et écris
-`videos/<STEM>/retraction_cuts.json` = `{"retraction_cuts":[{start,end,cue_text,rationale}]}`.
-Rubrique complète : `~/.claude/skills/video-ingest/SKILL.md`, section THE RETRACTION-DETECTION
-RUBRIC, plus ces cas du parlé spontané :
+`$DERUSH_OUT_ROOT/<STEM>/retraction_cuts.json` = `{"retraction_cuts":[{start,end,cue_text,rationale}]}`.
+Rubrique : celle de ce fichier, avec ces cas du parlé spontané :
 
 - **Faux départ** « je vais... on va voir » : couper « je vais » jusqu'au début de la reprise.
 - **Mot reformulé** « c'est un truc, un outil qui » : couper le premier seulement si le second

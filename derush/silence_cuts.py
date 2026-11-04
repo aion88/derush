@@ -19,9 +19,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 
-FFMPEG = "/opt/homebrew/bin/ffmpeg"
+FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 
 
 def detect(src: str, noise: float, min_dur: float) -> list[tuple[float, float]]:

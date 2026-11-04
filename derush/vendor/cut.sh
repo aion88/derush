@@ -32,8 +32,8 @@
 
 set -euo pipefail
 
-FFMPEG=/opt/homebrew/bin/ffmpeg
-FFPROBE=/opt/homebrew/bin/ffprobe
+FFMPEG="${FFMPEG:-$(command -v ffmpeg)}"
+FFPROBE="${FFPROBE:-$(command -v ffprobe)}"
 
 SRC="${1:-}"
 RANGES_JSON="${2:-}"
