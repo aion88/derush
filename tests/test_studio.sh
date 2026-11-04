@@ -44,10 +44,17 @@ assert_contains "$(cat "$T/opened.log")" "/edit?v=fixture%20test" "edit opened /
 assert_eq 1 "$(count)" "edit started no second server"
 
 # 3. a real job through the HTTP API runs bin/derush (proves the path passed to the server)
+rm -f "$T/out/fixture test/_work/proxy.mp4"   # edit already made one: remove it so the job must recreate it
 curl -s -X POST "http://127.0.0.1:$PORT/proxy?v=fixture%20test" >/dev/null
 for _ in $(seq 1 60); do [ -s "$T/out/fixture test/_work/proxy.mp4" ] && break; sleep 1; done
 [ -s "$T/out/fixture test/_work/proxy.mp4" ] && ok=1 || ok=0
 assert_eq 1 "$ok" "studio job (derush proxy) produced proxy.mp4"
+
+# 3b. detached into its own session: a launcher that dies with its process group leaves the studio up
+"$D" stop >/dev/null 2>&1
+bash -c 'set -m; "$0" studio --no-open >/dev/null 2>&1; kill -9 -- -$$ 2>/dev/null' "$D" >/dev/null 2>&1
+sleep 1
+assert_eq derush "$(curl -s "http://127.0.0.1:$PORT/health")" "studio survives its launcher's process group"
 
 # 4. stop
 "$D" stop >/dev/null 2>&1; rc=$?
@@ -58,6 +65,16 @@ assert_eq 0 "$up" "port closed after stop"
 [ -e "$HOME/Library/Logs/derush/studio.pid" ] && ok=1 || ok=0
 assert_eq 0 "$ok" "pidfile removed"
 "$D" stop >/dev/null 2>&1; assert_eq 0 "$?" "stop when not running exits 0"
+
+# 4b. stop refuses a pid that is not our server (bogus pidfile -> sleep)
+sleep 60 & SL=$!
+mkdir -p "$HOME/Library/Logs/derush"; echo "$SL" > "$HOME/Library/Logs/derush/studio.pid"
+"$D" stop >/dev/null 2>&1
+kill -0 "$SL" 2>/dev/null && ok=1 || ok=0
+assert_eq 1 "$ok" "stop leaves a foreign pid alive"
+[ -e "$HOME/Library/Logs/derush/studio.pid" ] && ok=1 || ok=0
+assert_eq 0 "$ok" "bogus pidfile removed"
+kill "$SL" 2>/dev/null
 
 # 5. foreign program on the port
 "$DERUSH_PY" -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1 & HTTP_PID=$!
