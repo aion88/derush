@@ -53,7 +53,7 @@ EPID=$!
 for _ in $(seq 1 50); do [ -s "$REC" ] && break; sleep 0.2; done
 pkill -P $EPID 2>/dev/null; kill $EPID 2>/dev/null; wait $EPID 2>/dev/null
 rec="$(cat "$REC" 2>/dev/null)"
-assert_contains "$rec" "1" "config key exported to child (DERUSH_FOO_TEST)"
+assert_eq "1" "$(sed -n 1p "$REC")" "config key exported to child (DERUSH_FOO_TEST)"
 assert_contains "$rec" "/edit?v=Movie%20on%2011-10-2026%20at%2020.42%20%232" "STEM percent-encoded in edit URL"
 
 # 6. The API key never shows in config show, from env or from the config file.
