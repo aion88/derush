@@ -10,11 +10,37 @@ class NoLLM(Exception):
 NO_LLM_MSG = "aucun LLM : installe Claude Code (claude) ou ajoute une clé OpenAI (derush config openai-key)"
 
 
+# Prompt in, JSON out : ni outils, ni MCP, ni CLAUDE.md. Sans ca ~85k tokens de contexte
+# par appel au lieu de ~4k (mesure 2026-11-04, meme modele, memes coupes).
+CLAUDE_ARGV = [
+    "claude",
+    "-p",
+    "--output-format",
+    "text",
+    "--strict-mcp-config",
+    "--tools",
+    "",
+    "--setting-sources",
+    "",
+]
+
+
 def keychain():
     try:
-        r = subprocess.run(["security", "find-generic-password", "-s", "derush-openai",
-                            "-a", os.environ.get("USER", ""), "-w"],
-                           capture_output=True, text=True, timeout=20)
+        r = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                "derush-openai",
+                "-a",
+                os.environ.get("USER", ""),
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
     except Exception:
         return None
     k = r.stdout.strip()
@@ -36,7 +62,9 @@ def _openai(prompt, key):
     model = os.environ.get("DERUSH_OPENAI_MODEL") or "gpt-4o-mini"
     req = urllib.request.Request(
         "https://api.openai.com/v1/chat/completions",
-        data=json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}]}).encode(),
+        data=json.dumps(
+            {"model": model, "messages": [{"role": "user", "content": prompt}]}
+        ).encode(),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
     try:
@@ -58,8 +86,10 @@ def complete(prompt):
     try:
         if engine == "openai":
             return _openai(prompt, arg), "openai"
-        argv = ["sh", "-c", arg] if engine == "custom" else ["claude", "-p", "--output-format", "text"]
-        r = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=240)
+        argv = ["sh", "-c", arg] if engine == "custom" else CLAUDE_ARGV
+        r = subprocess.run(
+            argv, input=prompt, capture_output=True, text=True, timeout=240
+        )
     except (urllib.error.URLError, OSError, subprocess.TimeoutExpired) as e:
         reason = getattr(e, "reason", None) or e
         raise RuntimeError(f"LLM injoignable : {reason}") from None

@@ -92,5 +92,24 @@ class Isolated(unittest.TestCase):
             self.assertEqual(out["proposals"], [])
 
 
+class ClaudeLean(unittest.TestCase):
+    # Le prompt de coupe n'a besoin ni d'outils, ni de MCP, ni du CLAUDE.md de la machine.
+    # Sans ces drapeaux un appel chargeait ~85k tokens de contexte pour ~2k utiles (mesure
+    # 2026-11-04 : 85k contre 4k, meme modele, memes coupes).
+    def test_claude_runs_without_tools_mcp_or_settings(self):
+        seen = {}
+        def fake_run(argv, **kw):
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, stdout='{"proposals":[]}', stderr="")
+        with mock.patch.object(llm, "pick", lambda *a: ("claude", None)), \
+             mock.patch.object(llm.subprocess, "run", fake_run):
+            llm.complete("x")
+        a = seen["argv"]
+        self.assertEqual(a[:2], ["claude", "-p"])
+        self.assertIn("--strict-mcp-config", a)
+        self.assertEqual(a[a.index("--tools") + 1], "")
+        self.assertEqual(a[a.index("--setting-sources") + 1], "")
+
+
 if __name__ == "__main__":
     unittest.main()
