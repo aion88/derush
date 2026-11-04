@@ -21,6 +21,10 @@
 #   derush export <STEM> [--from <fichier>]   --from : un montage retouché (export Resolve) passe la même chaîne
 #   derush export <STEM>      <STEM>.reel.mp4 : 1080x1920, 30 fps, -14 LUFS, faststart, prêt à poster
 #   derush all    <video>     prep puis render puis export, avec 0 faux départ (rapide, moins propre)
+#   derush kind   <fichier>   audio ou video (sans flux image, la pochette d'un mp3 ne compte pas)
+#
+# Un AUDIO seul (m4a, mp3, wav, aiff, caf : mémo vocal, podcast) passe la même chaîne : le montage
+# sort en <STEM>.derush.m4a, l'export en <STEM>.export.m4a (-14 LUFS). Pas de timeline, de logos, de look.
 #
 # <STEM> = le nom du dossier dans $DERUSH_OUT_ROOT (IMG_4567). Un chemin de vidéo marche aussi partout.
 #
@@ -71,7 +75,7 @@ export DERUSH_LLM="${DERUSH_LLM:-}" DERUSH_LOOK="${DERUSH_LOOK:-}"
 RUSHS="$DERUSH_OUT_ROOT"
 OPEN="${DERUSH_OPEN:-open}"
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 log() { printf '[derush %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 jlen() { "$DERUSH_PY" -I -c "import json,sys;d=json.load(open(sys.argv[1]));print(len(d[sys.argv[2]] if len(sys.argv)>2 else d))" "$@"; }
 
@@ -136,6 +140,17 @@ if [[ "$CMD" == stop ]]; then
   fi
   exit 0
 fi
+# Un seul endroit décide : source audio seule = aucun flux image, hors pochette (attached_pic=1).
+# prep écrit le verdict dans _work/kind ; tout le reste (shell, studio) lit ce fichier.
+is_audio_only() { # <fichier> : 0 si audio seul
+  local n; n=$(ffprobe -v error -select_streams v -show_entries stream_disposition=attached_pic -of csv=p=0 "$1" 2>/dev/null | grep -c '^0$' || true)
+  [[ "$n" == 0 ]]
+}
+if [[ "$CMD" == kind ]]; then
+  [[ -f "$ARG" ]] || { echo "fichier introuvable : $ARG" >&2; exit 1; }
+  if is_audio_only "$ARG"; then echo audio; else echo video; fi
+  exit 0
+fi
 # derush align <audio16k.wav> <asr.json> --out <aligned.json> : alignement mot à mot, sans STEM.
 # Un seul endroit construit l'appel : cmd_prep passe aussi par run_align.
 run_align() { "$DERUSH_PY" "$D/align_words.py" "$@"; }
@@ -143,7 +158,7 @@ if [[ "$CMD" == align ]]; then
   [[ $# -ge 3 ]] || usage
   shift; run_align "$@"; exit $?
 fi
-case "$CMD" in studio|stop|config|align) ;; *) [[ -z "$CMD" || -z "$ARG" ]] && usage;; esac
+case "$CMD" in studio|stop|config|align|kind) ;; *) [[ -z "$CMD" || -z "$ARG" ]] && usage;; esac
 shift 2
 
 LANG_=fr; NOISE=-35; MIN=0.45; PAD=0.12; FROM=""
@@ -170,6 +185,9 @@ else
 fi
 OUT="$RUSHS/$STEM"; W="$OUT/_work"
 mkdir -p "$W"
+# KIND = audio | video. Écrit par prep ; un rush d'avant (sans fichier) est une vidéo.
+KIND=video; [[ -f "$W/kind" ]] && KIND="$(cat "$W/kind")"
+EXT=mp4; [[ "$KIND" == audio ]] && EXT=m4a
 
 prompt_for() {
   case "$1" in
@@ -221,6 +239,8 @@ ingest_source() { # range la source dans $OUT si elle n'y est pas déjà
        V="$dest";;
   esac
   printf '%s\n' "$V" > "$W/source.txt"
+  if is_audio_only "$V"; then KIND=audio; EXT=m4a; else KIND=video; EXT=mp4; fi
+  printf '%s\n' "$KIND" > "$W/kind"
 }
 
 cmd_prep() {
@@ -290,13 +310,17 @@ PY
   "$DERUSH_PY" -I "$D/check_clips.py" "$W/aligned.json" "$W/keep.json" "$RC" --silence "$W/silence_cuts.json" --fillers "$W/filler_cuts.json" \
     || { log "7b GARDE ROUGE : un mot gardé serait rogné. Rien rendu."; exit 1; }
   log "7b garde verte"
-  local MP4="$OUT/$STEM.derush.mp4"
-  "$V_/cut.sh" "$V" "$W/keep.json" "$MP4" 2>"$W/cut.err" | tail -1 \
+  local MP4="$OUT/$STEM.derush.$EXT"
+  AUDIO_ONLY=$([[ "$KIND" == audio ]] && echo 1 || echo 0) "$V_/cut.sh" "$V" "$W/keep.json" "$MP4" 2>"$W/cut.err" | tail -1 \
     || { log "8 COUPE EN ECHEC : $W/cut.err"; tail -5 "$W/cut.err" >&2; exit 1; }
   log "8 coupe ok"
   local VD AD
-  VD=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=nw=1:nk=1 "$MP4")
-  AD=$(ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=nw=1:nk=1 "$MP4")
+  if [[ "$KIND" == audio ]]; then  # pas d'image : la durée du fichier fait foi, sync A/V sans objet
+    AD=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$MP4"); VD="$AD"
+  else
+    VD=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=nw=1:nk=1 "$MP4")
+    AD=$(ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=nw=1:nk=1 "$MP4")
+  fi
   ffmpeg -nostdin -y -loglevel error -i "$MP4" -vn -ac 1 -ar 16000 "$W/out.wav"
   transcribe "$W/out.wav" "$W"
   "$DERUSH_PY" -I "$D/verify_diff.py" "$W/audio.json" "$W/out.json" > "$W/verify_diff.txt" || true
@@ -321,13 +345,18 @@ open(sys.argv[10],"w").write("\n".join(lines)+"\n")
 print("\n".join(lines[3:6]))
 PY
   log "rapport : $OUT/cuts.md (relire la section diff, remplir Sujet)"
-  cmd_fcpxml
-  cmd_apercu
+  if [[ "$KIND" == video ]]; then cmd_fcpxml; cmd_apercu; fi
 }
 
 # Montage par le texte : page locale, on barre des mots, « Valider » écrit retraction_cuts.json
 # (+ restore.json pour les euh/silences rattrapés). Puis derush render. Proxy léger dans _work/.
 cmd_proxy() {
+  if [[ "$KIND" == audio ]]; then
+    [[ -s "$W/proxy.m4a" ]] && return 0
+    log "proxy léger (une fois) : $W/proxy.m4a"
+    ffmpeg -nostdin -y -loglevel error -i "$V" -vn -c:a aac -b:a 96k -movflags +faststart "$W/proxy.tmp.m4a" && mv "$W/proxy.tmp.m4a" "$W/proxy.m4a"
+    return
+  fi
   [[ -s "$W/proxy.mp4" ]] && return 0
   log "proxy léger (une fois) : $W/proxy.mp4"
   ffmpeg -nostdin -y -loglevel error -i "$V" -vf "scale=-2:960" -r 24 -c:v libx264 -preset veryfast -crf 28 -g 24 \
@@ -347,6 +376,7 @@ cmd_edit() {
 # L'aperçu à valider porte le look fixé ($DERUSH_LOOK, un .cube) : on valide l'image qui sera
 # publiée, pas la caméra brute. Export ne le lit pas, il reste un fichier de relecture.
 cmd_apercu() {
+  [[ "$KIND" == audio ]] && return 0
   local cube="${DERUSH_LOOK:-}"
   [[ -n "$cube" && -f "$cube" ]] || { log "aperçu : aucun look fixé, $STEM.derush.mp4 est l'image brute"; return 0; }
   ffmpeg -loglevel error -y -i "$OUT/$STEM.derush.mp4" -vf "lut3d=$cube,scale=1080:1920" \
@@ -355,6 +385,7 @@ cmd_apercu() {
 }
 
 cmd_logos() {
+  [[ "$KIND" == audio ]] && { echo "pas de logos sur un audio" >&2; exit 1; }
   [[ -f "$OUT/logos.json" ]] || { echo "pas de $OUT/logos.json : {\"cues\":[{\"logo\":\"canva\",\"t\":14.27}]} (t = instant SOURCE lu dans derush words)" >&2; exit 1; }
   [[ -f "$OUT/$STEM.derush.mp4" ]] || { echo "pas de montage pour $STEM (lancer render)" >&2; exit 1; }
   "$DERUSH_PY" -I "$D/logos.py" "$OUT" "$@"
@@ -362,12 +393,27 @@ cmd_logos() {
 }
 
 cmd_fcpxml() {
+  [[ "$KIND" == audio ]] && { echo "source audio : pas de timeline vidéo" >&2; exit 1; }
   [[ -f "$OUT/keep.json" ]] || { echo "pas de keep.json pour $STEM (lancer render)" >&2; exit 1; }
   "$DERUSH_PY" -I "$D/fcpxml.py" "$V" "$OUT/keep.json" "$OUT/$STEM.fcpxml" "$STEM"
   log "timeline : $OUT/$STEM.fcpxml (Resolve : File > Import > Timeline)"
 }
 
+cmd_export_audio() { # audio seul : <STEM>.export.m4a, -14 LUFS, AAC 192k, faststart. Même mesure en deux passes.
+  local SRC="$OUT/$STEM.derush.m4a" EXP="$OUT/$STEM.export.m4a"
+  [[ -n "$FROM" ]] && { SRC="$FROM"; log "export depuis $FROM (montage retouché à la main)"; }
+  [[ -f "$SRC" ]] || { echo "pas de montage pour $STEM (lancer render)" >&2; exit 1; }
+  local M; M=$(ffmpeg -nostdin -i "$SRC" -af "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json" -f null - 2>&1 | "$DERUSH_PY" -I "$D/loudnorm_measure.py")
+  ffmpeg -nostdin -y -loglevel error -i "$SRC" -vn \
+    -af "loudnorm=I=-14:TP=-1.5:LRA=11:$M:linear=true" -c:a aac -b:a 192k -ar 48000 -ac 2 \
+    -movflags +faststart "$EXP"
+  local LUFS; LUFS=$(ffmpeg -nostdin -i "$EXP" -af "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=summary" -f null - 2>&1 | grep "Input Integrated" | awk '{print $3}')
+  log "export loudness : $LUFS LUFS (cible -14)"
+  log "export : $EXP ($(du -h "$EXP" | cut -f1))"
+}
+
 cmd_export() {
+  [[ "$KIND" == audio ]] && { cmd_export_audio; return; }
   local MP4="$OUT/$STEM.derush.mp4" REEL="$OUT/$STEM.reel.mp4"
   [[ -f "$OUT/$STEM.logos.mp4" ]] && { MP4="$OUT/$STEM.logos.mp4"; log "export depuis la version avec logos"; }
   [[ -n "$FROM" ]] && { MP4="$FROM"; log "export depuis $FROM (montage retouché à la main)"; }

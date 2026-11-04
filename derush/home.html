@@ -29,16 +29,16 @@
 <header>derush studio</header>
 <main>
   <div id="drop">
-    <b>Dépose ta vidéo brute ici</b>
-    <small>ou clique pour la choisir · mov, mp4 · face caméra, la voix compte</small>
-    <input type="file" id="file" accept="video/*" hidden>
+    <b>Dépose ta vidéo ou ton audio brut ici</b>
+    <small>ou clique pour le choisir · mov, mp4, m4a, mp3, wav · la voix compte</small>
+    <input type="file" id="file" accept="video/*,audio/*" hidden>
   </div>
   <div class="lang">Langue parlée :
     <label><input type="radio" name="lang" value="fr" checked> français</label>
     <label><input type="radio" name="lang" value="en"> anglais</label>
   </div>
   <div id="up"></div>
-  <h2>Tes vidéos</h2>
+  <h2>Tes rushs</h2>
   <div id="list"></div>
 </main>
 <script>
@@ -65,10 +65,10 @@ function send(f) {
   x.send(f);
 }
 
-const STATE = { "brut": "brute, derush à faire", "prêt": "derush fait, à monter au texte", "monté": "montée" };
+const STATE = { "brut": "brut, derush à faire", "prêt": "derush fait, à monter au texte", "monté": "monté" };
 async function refresh() {
   const vs = await fetch("/videos").then(r => r.json());
-  $("#list").innerHTML = vs.length ? "" : "<p style='color:var(--mute)'>Aucune vidéo pour l'instant.</p>";
+  $("#list").innerHTML = vs.length ? "" : "<p style='color:var(--mute)'>Aucun rush pour l'instant.</p>";
   vs.forEach(v => {
     const d = document.createElement("div"); d.className = "v";
     const j = v.job || {};
@@ -77,7 +77,7 @@ async function refresh() {
     else if (v.state !== "brut") act = `<a class="b" href="/edit?v=${encodeURIComponent(v.stem)}">Ouvrir</a>`;
     const info = j.running ? `<span class="j">${(j.tail || []).slice(-2).join("\n")}</span>`
       : j.error ? `<span class="j err">En échec : ${(j.tail || []).slice(-3).join("\n")}</span>` : "";
-    d.innerHTML = `<div class="n">${v.stem}<br><span class="s">${STATE[v.state] || v.state}</span>${info}</div>${act}`;
+    d.innerHTML = `<div class="n">${v.stem}<br><span class="s">${v.kind === "audio" ? "audio · " : ""}${STATE[v.state] || v.state}</span>${info}</div>${act}`;
     $("#list").appendChild(d);
   });
 }

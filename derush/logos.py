@@ -21,6 +21,7 @@ def run(cmd): subprocess.run(cmd, check=True)
 def probe(mp4):
     out = subprocess.run(["ffprobe","-v","error","-select_streams","v:0","-show_entries","stream=width,height",
                           "-of","csv=p=0",str(mp4)],capture_output=True,text=True,check=True).stdout.strip()
+    if not out: sys.exit("pas de logos sur un audio")
     w,h = out.split(","); return int(w),int(h)
 
 def make_card(name: str, src_dir: Path, out: Path, size: int) -> Path:

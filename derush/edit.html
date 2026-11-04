@@ -15,6 +15,8 @@
   main { display:grid; grid-template-columns:minmax(260px, 32vw) 1fr; gap:28px; padding:20px; }
   .side { position:sticky; top:64px; align-self:start; max-height:calc(100vh - 84px); overflow:auto; }
   video { width:100%; max-height:62vh; background:#000; border-radius:4px; }
+  video.audio { height:56px; background:#2a2823; }
+  #audioTag { display:none; font-size:12px; color:var(--mute); margin-bottom:6px; }
   .help { font-size:13px; color:#5b564e; margin-top:10px; line-height:1.5; }
   .help kbd { font:12px ui-monospace, monospace; border:1px solid #bbb; border-radius:3px; padding:0 4px; background:#fff; }
   #text { max-width:760px; }
@@ -50,6 +52,7 @@
 </header>
 <main>
   <div class="side">
+    <div id="audioTag">audio seul</div>
     <video id="v" controls preload="auto" playsinline></video>
     <div id="result" hidden style="margin-top:12px;font-size:13px">
       <b>Résultat monté</b> <button id="showRes" style="color:var(--ink);border-color:#999;padding:1px 8px">voir</button>
@@ -83,12 +86,14 @@ async function waitJob(label) {
   }
 }
 let srcMode = true;
-function showSource() { srcMode = true; v.src = "/proxy.mp4" + q; }
-function showResult() { srcMode = false; v.src = "/result.mp4" + q + "&t=" + Date.now(); v.play(); }
+let EXT = "mp4";  // m4a pour un audio seul : le lecteur reste un petit bandeau sombre, pas un cadre noir
+function showSource() { srcMode = true; v.src = "/proxy." + EXT + q; }
+function showResult() { srcMode = false; v.src = "/result." + EXT + q + "&t=" + Date.now(); v.play(); }
 (async () => {
   let j = await fetch("/job" + q).then(r => r.json());
   if (j.running) j = await waitJob(j.label);
   const me = (await fetch("/videos").then(r => r.json())).find(x => x.stem === STEM) || {};
+  if (me.kind === "audio") { EXT = "m4a"; v.classList.add("audio"); $("#audioTag").style.display = "block"; $("#save").textContent = "Monter l'audio"; }
   if (!me.proxy) { await fetch("/proxy" + q, { method: "POST" }); await waitJob("Version légère pour la page"); }
   showSource();
 })();
@@ -303,7 +308,7 @@ $("#save").onclick = async () => {
   const j = await waitJob(`Montage en cours (${r.cuts} coupes de texte, quelques minutes)`);
   $("#save").disabled = false;
   if (j.error) { $("#status").textContent = "Montage en échec : " + (j.tail || []).slice(-2).join(" ") + warn; return; }
-  $("#status").textContent = "Vidéo montée. Fichier : " + STEM + ".derush.mp4 dans son dossier." + warn;
+  $("#status").textContent = (EXT === "m4a" ? "Audio monté. Fichier : " + STEM + ".derush.m4a" : "Vidéo montée. Fichier : " + STEM + ".derush.mp4") + " dans son dossier." + warn;
   $("#result").hidden = false; showResult();
 };
 $("#showRes").onclick = showResult;

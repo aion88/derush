@@ -110,6 +110,38 @@ fi
 # grid, so each kept piece has the same audio and video length, and one encoder
 # writes one timeline: no join can drift.
 mkdir -p "$(dirname "$OUTPUT")"
+
+# --- Audio-only path: same one-pass atrim/concat, same fades, no video graph ---
+# AUDIO_ONLY=1 (set by derush for a source with no video stream) or an .m4a output.
+# No FPS probe, no [vo]: ranges stay in seconds, output is AAC 192k m4a, faststart.
+if [[ "${AUDIO_ONLY:-0}" == "1" || "$OUTPUT" == *.m4a ]]; then
+  GRAPH="$TMPDIR/graph.txt"
+  TOTAL_KEPT=$(${DERUSH_PY:-python3} - "$RANGES_JSON" "$FADE_S" "$APPLY_FADE" "$GRAPH" <<'PYEOF'
+import json, sys
+ranges = json.load(open(sys.argv[1]))
+fade, apply_fade, out = float(sys.argv[2]), sys.argv[3] == "1", sys.argv[4]
+parts, labels, total = [], [], 0.0
+for i, r in enumerate(ranges):
+    s, e = float(r["start"]), float(r["end"])
+    if e <= s:
+        continue
+    d = e - s
+    af = f",afade=t=in:st=0:d={fade},afade=t=out:st={d - fade:.6f}:d={fade}" if apply_fade and d > 2 * fade else ""
+    parts.append(f"[0:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS{af}[a{i}];")
+    labels.append(f"[a{i}]")
+    total += d
+parts.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[ao]")
+open(out, "w").write("\n".join(parts))
+print(round(total, 3))
+PYEOF
+)
+  IDX=$(grep -c "^\[0:a\]atrim" "$GRAPH")
+  "$FFMPEG" -nostdin -y -loglevel warning -i "$SRC" -/filter_complex "$GRAPH" \
+    -map "[ao]" -c:a aac -b:a 192k -movflags +faststart "$OUTPUT"
+  echo "Cut complete: $IDX range(s), ${TOTAL_KEPT}s kept → $OUTPUT"
+  exit 0
+fi
+
 if [[ "${LOSSLESS:-0}" != "1" ]]; then
   FPS=$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=nw=1:nk=1 "$SRC")
   GRAPH="$TMPDIR/graph.txt"

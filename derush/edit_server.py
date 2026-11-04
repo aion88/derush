@@ -81,17 +81,31 @@ def job_state(stem):
     }
 
 
+def kind(stem):
+    """audio | video, lu dans _work/kind (écrit par derush prep). Un rush d'avant est une vidéo."""
+    try:
+        k = open(os.path.join(paths(stem)[1], "kind")).read().strip()
+    except FileNotFoundError:
+        return "video"
+    return "audio" if k == "audio" else "video"
+
+
+def ext(stem):
+    return "m4a" if kind(stem) == "audio" else "mp4"
+
+
 def video_state(stem):
     out, w = paths(stem)
     st = "brut"
     if os.path.exists(os.path.join(w, "aligned.json")):
         st = "prêt"
-    if os.path.exists(os.path.join(out, f"{stem}.derush.mp4")):
+    if os.path.exists(os.path.join(out, f"{stem}.derush.{ext(stem)}")):
         st = "monté"
     return {
         "stem": stem,
+        "kind": kind(stem),
         "state": st,
-        "proxy": os.path.exists(os.path.join(w, "proxy.mp4")),
+        "proxy": os.path.exists(os.path.join(w, f"proxy.{ext(stem)}")),
         "mtime": os.path.getmtime(out),
         "job": job_state(stem),
     }
@@ -136,6 +150,7 @@ def data(stem):
     ]
     return {
         "stem": stem,
+        "kind": kind(stem),
         "words": words,
         "keep": load(os.path.join(w, "keep.json"), []),
         "gaps": keep_speech_gaps(w),
@@ -144,7 +159,7 @@ def data(stem):
             os.path.join(out, "retraction_cuts.json"), {"retraction_cuts": []}
         )["retraction_cuts"],
         "restore": load(os.path.join(out, "restore.json"), {"restore": []})["restore"],
-        "rendered": os.path.exists(os.path.join(out, f"{stem}.derush.mp4")),
+        "rendered": os.path.exists(os.path.join(out, f"{stem}.derush.{ext(stem)}")),
     }
 
 
@@ -268,10 +283,12 @@ class H(BaseHTTPRequestHandler):
             out, w = paths(stem)
             if path == "/data":
                 return self._json(data(stem))
-            if path == "/proxy.mp4":
-                return self._video(os.path.join(w, "proxy.mp4"))
-            if path == "/result.mp4":
+            if path in ("/proxy.mp4", "/proxy.m4a"):
+                return self._video(os.path.join(w, "proxy." + path[-3:]))
+            if path in ("/result.mp4", "/result.m4a"):
                 look = os.path.join(out, f"{stem}.apercu-look.mp4")
+                if path.endswith("m4a"):
+                    return self._video(os.path.join(out, f"{stem}.derush.m4a"))
                 return self._video(
                     look
                     if os.path.exists(look)
@@ -296,7 +313,9 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         else:
             self.send_response(200)
-        self.send_header("Content-Type", "video/mp4")
+        self.send_header(
+            "Content-Type", "audio/mp4" if p.endswith(".m4a") else "video/mp4"
+        )
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         self.end_headers()
@@ -315,14 +334,17 @@ class H(BaseHTTPRequestHandler):
 
     def _upload(self, q):
         name = re.sub(r"[^\w.-]+", "_", os.path.basename(q.get("name", "")))
-        if not re.search(r"\.(mov|mp4|m4v|mkv|webm)$", name, re.I):
+        if not re.search(r"\.(mov|mp4|m4v|mkv|webm|m4a|mp3|wav|aiff?|caf|aac|flac)$", name, re.I):
             return self._json(
-                {"error": "format non vidéo (mov, mp4, m4v, mkv, webm)"}, 400
+                {
+                    "error": "format non pris en charge (vidéo : mov, mp4, m4v, mkv, webm ; audio : m4a, mp3, wav, aiff, caf)"
+                },
+                400,
             )
         stem = name.rsplit(".", 1)[0]
         if os.path.exists(os.path.join(RUSHS, stem)):
             return self._json(
-                {"error": f"une vidéo {stem} existe déjà, ouvre-la dans la liste"}, 409
+                {"error": f"un rush {stem} existe déjà, ouvre-le dans la liste"}, 409
             )
         up = os.path.join(RUSHS, "_uploads")
         os.makedirs(up, exist_ok=True)

@@ -26,7 +26,9 @@ def probe(src):
         check=True,
     ).stdout
     d = json.loads(out)
-    v = next(s for s in d["streams"] if s["codec_type"] == "video")
+    v = next((s for s in d["streams"] if s["codec_type"] == "video"), None)
+    if v is None:
+        sys.exit("source audio : pas de timeline vidéo")
     a = next((s for s in d["streams"] if s["codec_type"] == "audio"), None)
     cw, ch_ = int(v["width"]), int(v["height"])
     w, h = cw, ch_
