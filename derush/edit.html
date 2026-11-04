@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>derush edit</title>
+<style>
+  :root { --ink:#141414; --paper:#f4efe6; --mute:#a59f94; --cut:#c23b22; --hl:#ffe08a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.7 -apple-system, "Helvetica Neue", sans-serif; background:var(--paper); color:var(--ink); }
+  header { position:sticky; top:0; z-index:2; display:flex; gap:12px; align-items:center; padding:10px 20px; background:var(--ink); color:var(--paper); font-size:14px; }
+  header b { font-weight:600; margin-right:auto; }
+  button { font:inherit; border:1px solid var(--paper); background:none; color:var(--paper); padding:5px 12px; border-radius:3px; cursor:pointer; }
+  button.primary { background:var(--cut); border-color:var(--cut); }
+  label { display:flex; gap:6px; align-items:center; cursor:pointer; }
+  main { display:grid; grid-template-columns:minmax(260px, 32vw) 1fr; gap:28px; padding:20px; }
+  .side { position:sticky; top:64px; align-self:start; max-height:calc(100vh - 84px); overflow:auto; }
+  video { width:100%; max-height:62vh; background:#000; border-radius:4px; }
+  .help { font-size:13px; color:#5b564e; margin-top:10px; line-height:1.5; }
+  .help kbd { font:12px ui-monospace, monospace; border:1px solid #bbb; border-radius:3px; padding:0 4px; background:#fff; }
+  #text { max-width:760px; }
+  p.seg { margin:0 0 14px; }
+  span.w { cursor:text; border-radius:2px; padding:0 1px; }
+  span.w.now { background:var(--hl); }
+  span.w.struck { color:var(--cut); text-decoration:line-through; text-decoration-thickness:2px; }
+  span.w.auto { color:var(--mute); text-decoration:line-through; }
+  span.w.restored { box-shadow:inset 0 -2px 0 #3d7a4f; }
+  span.w.approx { border-bottom:1px dotted var(--mute); }
+  #status { font-size:13px; opacity:.85; }
+  span.w.prop { background:#f6c48a; }
+  span.w.prop.sel { background:#e8913a; }
+  button.alt { border-color:#e8913a; color:#f6c48a; }
+  #props { margin-top:14px; font-size:13px; line-height:1.45; max-height:40vh; overflow:auto; }
+  #props .p { padding:8px 10px; border-left:3px solid #e8913a; background:#fff8ef; margin-bottom:6px; cursor:pointer; }
+  #props .p i { color:#7a5a2e; display:block; margin-top:2px; }
+  #props .p button { color:var(--ink); border-color:#bbb; padding:1px 8px; margin:4px 6px 0 0; font-size:12px; }
+  #props .all button { color:var(--ink); border-color:var(--ink); margin:0 6px 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" style="color:var(--paper);text-decoration:none">← vidéos</a>
+  <b id="title">derush edit</b>
+  <span id="status"></span>
+  <label><input type="checkbox" id="preview" checked> aperçu sans les coupes</label>
+  <button id="strike">Barrer (Suppr)</button>
+  <button id="unstrike">Rétablir (Entrée)</button>
+  <button id="undo">Annuler (⌘Z)</button>
+  <button id="propose" class="alt">Proposer un montage serré</button>
+  <button id="save" class="primary">Monter la vidéo</button>
+</header>
+<main>
+  <div class="side">
+    <video id="v" controls preload="auto" playsinline></video>
+    <div id="result" hidden style="margin-top:12px;font-size:13px">
+      <b>Résultat monté</b> <button id="showRes" style="color:var(--ink);border-color:#999;padding:1px 8px">voir</button>
+      <button id="showSrc" style="color:var(--ink);border-color:#999;padding:1px 8px">revenir au brut</button>
+    </div>
+    <div class="help">
+      Clic sur un mot : la vidéo y saute. <kbd>Espace</kbd> lecture.<br>
+      Sélectionne des mots puis <kbd>Suppr</kbd> pour les couper, <kbd>Entrée</kbd> pour les rétablir.<br>
+      <span style="color:var(--cut)">Rouge barré</span> : coupé par toi.
+      <span style="color:var(--mute)">Gris barré</span> : silence ou euh coupé tout seul (rétablissable).
+      Pointillé : position du mot approximative.<br>
+      « Monter la vidéo » applique tes coupes et rend la vidéo finale.<br>
+      <span style="background:#f6c48a">Orange</span> : coupe proposée par Claude, rien n'est coupé sans ton OK.
+    </div>
+    <div id="props"></div>
+  </div>
+  <div id="text"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const v = $("#v");
+const STEM = new URLSearchParams(location.search).get("v");
+const q = "?v=" + encodeURIComponent(STEM);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function waitJob(label) {
+  for (;;) {
+    const j = await fetch("/job" + q).then(r => r.json());
+    if (!j.running) return j;
+    $("#status").textContent = `${label}… ${(j.tail || []).slice(-1)[0] || ""}`;
+    await sleep(2000);
+  }
+}
+let srcMode = true;
+function showSource() { srcMode = true; v.src = "/proxy.mp4" + q; }
+function showResult() { srcMode = false; v.src = "/result.mp4" + q + "&t=" + Date.now(); v.play(); }
+(async () => {
+  let j = await fetch("/job" + q).then(r => r.json());
+  if (j.running) j = await waitJob(j.label);
+  const me = (await fetch("/videos").then(r => r.json())).find(x => x.stem === STEM) || {};
+  if (!me.proxy) { await fetch("/proxy" + q, { method: "POST" }); await waitJob("Version légère pour la page"); }
+  showSource();
+})();
+let D, W = [], dissolved = [], history = [], P = [];
+const inside = (t, spans) => spans.some(k => t >= k.start && t < k.end);
+const mid = w => (w.s + w.e) / 2;
+
+fetch("/data" + q).then(r => r.json()).then(d => {
+  D = d;
+  if (d.rendered) $("#result").hidden = false;
+  $("#title").textContent = "derush edit : " + d.stem;
+  document.title = "derush edit : " + d.stem;
+  const restoreSet = new Set(d.restore.map(r => r.i != null ? r.i : r.start.toFixed(3)));
+  // trous où le derush entend de la parole non transcrite : gardés, affichés en italique, barrables
+  const items = d.words.map((w, ai) => ({ ...w, ai }));
+  d.gaps.forEach((g, gk) => {
+    const k = items.findIndex(w => w.s >= g.end - 0.05);
+    const seg = k >= 0 ? items[k].seg : (items.length ? items[items.length - 1].seg : 0);
+    items.splice(k >= 0 ? k : items.length, 0, { w: "« " + g.heard + " »", s: g.start, e: g.end, a: true, seg, ai: -1, gap: true, pi: d.words.length + gk });
+  });
+  W = items.map((w, i) => {
+    const m = mid(w);
+    const rc = d.retraction_cuts.findIndex(c => m >= c.start && m < c.end);
+    let st = "kept";
+    if (rc >= 0) st = "struck";
+    else if (w.gap) st = "kept";
+    else if (restoreSet.has(w.ai) || restoreSet.has(w.s.toFixed(3))) st = "restored";
+    else if (inside(m, d.auto)) st = "auto";
+    return { ...w, i, rc, st };
+  });
+  dissolved = d.retraction_cuts.map(() => false);
+  const box = $("#text");
+  let p = null, seg = -1;
+  W.forEach(w => {
+    if (w.seg !== seg) { p = document.createElement("p"); p.className = "seg"; box.appendChild(p); seg = w.seg; }
+    const s = document.createElement("span");
+    s.className = "w"; s.dataset.i = w.i; s.textContent = w.w;
+    if (!w.a) s.title = "borne approximative (mot non aligné)";
+    if (w.gap) { s.style.fontStyle = "italic"; s.style.color = "#6b5f4f"; s.title = "parole entendue dans un trou, non transcrite : gardée par défaut"; }
+    if (p.lastChild && !/^['’-]/.test(w.w)) p.appendChild(document.createTextNode(" "));
+    w.el = s; p.appendChild(s);
+  });
+  paint();
+});
+
+function paint() {
+  let n = 0;
+  W.forEach(w => {
+    w.el.className = "w " + (w.st === "kept" ? "" : w.st) + (w.a ? "" : " approx");
+    if (w.st === "struck" && w.rc < 0) n++;
+  });
+  const kept = W.filter(w => w.st === "kept" || w.st === "restored").length;
+  $("#status").textContent = `${kept} mots gardés sur ${W.length} · ${n} barrés à la main`;
+}
+
+function selected() {
+  const sel = getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) {
+    const cur = W.find(w => w.el.classList.contains("now"));
+    return cur ? [cur] : [];
+  }
+  const r = sel.getRangeAt(0);
+  return W.filter(w => r.intersectsNode(w.el));
+}
+
+function snapshot() { history.push(JSON.stringify({ st: W.map(w => [w.st, w.rc]), dissolved })); }
+
+function dissolve(rc) {
+  // un mot rétabli dans une coupe existante : la coupe entière tombe, ses autres mots restent barrés à la main
+  if (rc < 0 || dissolved[rc]) return;
+  dissolved[rc] = true;
+  W.forEach(w => { if (w.rc === rc) w.rc = -1; });
+}
+
+function strike(on) {
+  const ws = selected();
+  if (!ws.length) return;
+  snapshot();
+  ws.forEach(w => {
+    if (on) {
+      if (w.st === "kept" || w.st === "restored") w.st = "struck";
+    } else {
+      if (w.st === "struck") { dissolve(w.rc); w.st = "kept"; }
+      else if (w.st === "auto") w.st = "restored";
+    }
+  });
+  getSelection().removeAllRanges();
+  paint();
+}
+
+function undo() {
+  const h = history.pop();
+  if (!h) return;
+  const o = JSON.parse(h);
+  W.forEach((w, i) => { [w.st, w.rc] = o.st[i]; });
+  dissolved = o.dissolved;
+  paint();
+}
+
+// les coupes du texte, avec la règle de bornes de SKILL.md étape 6
+let refused = [];
+function cuts() {
+  refused = [];
+  const out = D.retraction_cuts.filter((c, k) => !dissolved[k]).map(c => ({ ...c }));
+  const dur = isFinite(v.duration) ? v.duration : W[W.length - 1].e + 0.5;
+  let i = 0;
+  while (i < W.length) {
+    if (!(W[i].st === "struck" && W[i].rc < 0)) { i++; continue; }
+    let j = i;
+    while (j + 1 < W.length && ((W[j + 1].st === "struck" && W[j + 1].rc < 0) || W[j + 1].st === "auto")) j++;
+    while (W[j].st === "auto") j--;
+    let pk = i - 1; while (pk >= 0 && W[pk].st === "struck") pk--;
+    let nk = j + 1; while (nk < W.length && W[nk].st === "struck") nk++;
+    const start = pk >= 0 ? (W[pk].e + W[i].s) / 2 : 0;
+    // mot suivant collé (pas de blanc) : la coupe va au moins jusqu'à la fin du dernier mot barré
+    const end = nk < W.length ? Math.max(W[nk].s - 0.04, W[j].e) : dur;
+    // garde : un mot gardé (souvent non aligné, bornes partagées) ne doit jamais tomber dans la coupe
+    const kept = W.filter(w => (w.st === "kept" || w.st === "restored") && w.s < end && w.e > start);
+    if (kept.length) { refused.push(W.slice(i, j + 1).filter(w => w.st === "struck").map(w => w.w).join(" ")); i = j + 1; continue; }
+    out.push({ start, end, cue_text: W.slice(i, j + 1).filter(w => w.st === "struck").map(w => w.w).join(" "),
+               rationale: "barré dans l'éditeur" });
+    i = j + 1;
+  }
+  return out;
+}
+
+// aperçu : ce que le navigateur saute pendant la lecture (approché, le vrai montage est celui de render)
+function skipAt(t) {
+  const w = W.find(w => t >= w.s && t < w.e);
+  if (w && (w.st === "kept" || w.st === "restored")) return null;
+  const c = cuts().find(c => t >= c.start && t < c.end);
+  if (c) return c.end;
+  const a = D.auto.find(k => t >= k.start && t < k.end);
+  if (a) {
+    const nw = W.find(w => w.s > t && (w.st === "kept" || w.st === "restored"));
+    return nw ? Math.min(a.end, nw.s) : a.end;
+  }
+  return null;
+}
+
+function tick() {
+  const t = v.currentTime;
+  if (srcMode && !v.paused && $("#preview").checked) {
+    const to = skipAt(t);
+    if (to != null && to > t + 0.02) v.currentTime = to;
+  }
+  const now = W.find(w => t >= w.s && t < w.e);
+  document.querySelectorAll("span.w.now").forEach(e => e.classList.remove("now"));
+  if (now) now.el.classList.add("now");
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+$("#text").addEventListener("click", e => {
+  const s = e.target.closest("span.w");
+  if (s && !srcMode) showSource();
+  if (s && getSelection().isCollapsed) v.currentTime = W[+s.dataset.i].s;
+});
+$("#strike").onclick = () => strike(true);
+$("#unstrike").onclick = () => strike(false);
+$("#undo").onclick = undo;
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "Backspace" || e.key === "Delete") { e.preventDefault(); strike(true); }
+  else if (e.key === "Enter") { e.preventDefault(); strike(false); }
+  else if (e.key === " ") { e.preventDefault(); v.paused ? v.play() : v.pause(); }
+  else if (e.key === "z" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); undo(); }
+});
+// montage serré proposé : orange, accepté = barré comme à la main
+function showProps() {
+  W.forEach(w => w.el.classList.remove("prop", "sel"));
+  const box = $("#props");
+  box.innerHTML = P.length ? `<div class="all">${P.length} coupes proposées
+    <br><button id="accAll">Tout accepter</button><button id="rejAll">Tout refuser</button></div>` : "";
+  P.forEach((p, k) => {
+    for (let i = p.from; i <= p.to; i++) if (W[i].st === "kept" || W[i].st === "restored") { W[i].el.classList.add("prop"); W[i].el.title = p.reason; }
+    const d = document.createElement("div"); d.className = "p";
+    d.innerHTML = `« ${p.text} »<i>${p.reason}</i><button data-a="${k}">Couper</button><button data-r="${k}">Garder</button>`;
+    d.onmouseenter = () => { for (let i = p.from; i <= p.to; i++) W[i].el.classList.add("sel"); };
+    d.onmouseleave = () => W.forEach(w => w.el.classList.remove("sel"));
+    d.onclick = e => { if (e.target.tagName !== "BUTTON") { v.currentTime = W[p.from].s; W[p.from].el.scrollIntoView({ block: "center", behavior: "smooth" }); } };
+    box.appendChild(d);
+  });
+  const acc = ks => { snapshot(); ks.forEach(k => { const p = P[k]; for (let i = p.from; i <= p.to; i++) if (W[i].st === "kept" || W[i].st === "restored") W[i].st = "struck"; }); P = P.filter((_, k) => !ks.includes(k)); paint(); showProps(); };
+  const rej = ks => { P = P.filter((_, k) => !ks.includes(k)); showProps(); };
+  box.querySelectorAll("button[data-a]").forEach(b => b.onclick = () => acc([+b.dataset.a]));
+  box.querySelectorAll("button[data-r]").forEach(b => b.onclick = () => rej([+b.dataset.r]));
+  if (P.length) { $("#accAll").onclick = () => acc(P.map((_, k) => k)); $("#rejAll").onclick = () => rej(P.map((_, k) => k)); }
+}
+$("#propose").onclick = async () => {
+  $("#propose").disabled = true; $("#status").textContent = "Claude lit le transcript…";
+  const t0 = Date.now();
+  const r = await fetch("/propose" + q, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keep_idx: W.filter(w => w.ai >= 0 && (w.st === "kept" || w.st === "restored")).map(w => w.ai),
+      gap_idx: W.filter(w => w.gap && w.st === "kept").map(w => w.pi) }) }).then(r => r.json());
+  $("#propose").disabled = false;
+  if (r.error) { $("#status").textContent = "Proposition en échec : " + r.error; return; }
+  const pos = {}; W.forEach(w => { if (w.ai >= 0) pos[w.ai] = w.i; else if (w.gap) pos[w.pi] = w.i; });
+  P = r.proposals.filter(p => pos[p.from] != null && pos[p.to] != null).map(p => ({ ...p, from: pos[p.from], to: pos[p.to] }));
+  showProps();
+  $("#status").textContent = `${P.length} coupes proposées en ${Math.round((Date.now() - t0) / 1000)} s`;
+};
+$("#save").onclick = async () => {
+  const body = { retraction_cuts: cuts(), restore: W.filter(w => w.st === "restored").map(w => {
+    // mot non aligné : bornes interpolées, on ne rattrape que 0,6 s autour de son milieu
+    const m = mid(w), s = w.a ? w.s : Math.max(w.s, m - 0.3), e = w.a ? w.e : Math.min(w.e, m + 0.3);
+    return { start: s, end: e, word: w.w, i: w.ai }; }) };
+  const r = await fetch("/save" + q, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(r => r.json());
+  const warn = refused.length ? ` NON COUPÉ (mot mal placé, collé à un mot gardé) : « ${refused.join(" », « ")} »` : "";
+  $("#save").disabled = true;
+  await fetch("/render" + q, { method: "POST" });
+  const j = await waitJob(`Montage en cours (${r.cuts} coupes de texte, quelques minutes)`);
+  $("#save").disabled = false;
+  if (j.error) { $("#status").textContent = "Montage en échec : " + (j.tail || []).slice(-2).join(" ") + warn; return; }
+  $("#status").textContent = "Vidéo montée. Fichier : " + STEM + ".derush.mp4 dans son dossier." + warn;
+  $("#result").hidden = false; showResult();
+};
+$("#showRes").onclick = showResult;
+$("#showSrc").onclick = showSource;
+</script>
+</body>
+</html>
