@@ -1,0 +1,451 @@
+#!/usr/bin/env bash
+# derush — une commande pour tout le mécanique du dérush.
+#
+#   derush prep   <video> [--lang fr|en] [--noise -35] [--min 0.45] [--pad 0.12]
+#                 (--noise est un plafond : word_peaks.py le descend si un mot aligné pique dessous)
+#                 range la source dans $DERUSH_OUT_ROOT/<STEM>/, puis audio, silences, transcription (qwen, whisper en secours),
+#                 alignement, euh, trous. Écrit transcript.txt. ~1.5x la durée de la vidéo.
+#   derush words  <STEM>      transcript mot à mot avec bornes, pour l'étape faux départs
+#   derush align  <audio16k.wav> <asr.json> --out <aligned.json>   alignement mot à mot (sans STEM)
+#   derush config openai-key  enregistre la clé OpenAI dans le trousseau (saisie masquée)
+#   derush config show        la configuration résolue (~/.config/derush/config, l'environnement l'emporte)
+#   derush studio [--no-open]  tout dans le navigateur : déposer une vidéo brute, derush, montage
+#                             par le texte, montage serré proposé, rendu
+#   derush stop               arrête le studio lancé par derush studio
+#   derush edit   <STEM>      montage par le texte : page locale, tu barres des mots, Valider écrit
+#                             retraction_cuts.json (+ restore.json), puis derush render. Proxy dans _work/
+#   derush render <STEM>      fusion + garde + coupe + vérification → <STEM>.derush.mp4 + cuts.md
+#   derush logos  <STEM> [--x 0.04|center] [--y 0.03] [--width 0.30]   logos.json → <STEM>.logos.mp4
+#   derush fcpxml <STEM>      <STEM>.fcpxml : le montage en timeline Resolve, clips sur la source entière
+#                             (tirer un bord de clip rend ce qui a été coupé). render l'écrit aussi.
+#   derush export <STEM> [--from <fichier>]   --from : un montage retouché (export Resolve) passe la même chaîne
+#   derush export <STEM>      <STEM>.reel.mp4 : 1080x1920, 30 fps, -14 LUFS, faststart, prêt à poster
+#   derush all    <video>     prep puis render puis export, avec 0 faux départ (rapide, moins propre)
+#   derush kind   <fichier>   audio ou video (sans flux image, la pochette d'un mp3 ne compte pas)
+#
+# Un AUDIO seul (m4a, mp3, wav, aiff, caf : mémo vocal, podcast) passe la même chaîne : le montage
+# sort en <STEM>.derush.m4a, l'export en <STEM>.export.m4a (-14 LUFS). Pas de timeline, de logos, de look.
+#
+# <STEM> = le nom du dossier dans $DERUSH_OUT_ROOT (IMG_4567). Un chemin de vidéo marche aussi partout.
+#
+# Dossier : $DERUSH_OUT_ROOT/<STEM>/ (défaut ~/Movies/Derush)
+#   <STEM>.MOV             la source, déplacée ici par prep (même volume : instantané, réversible)
+#   <STEM>.derush.mp4      le montage, qualité master (fps et débit de la source)
+#   <STEM>.reel.mp4        la version à poster (export)
+#   cuts.md                le rapport : durées, couches, faux départs, diff source/sortie
+#   retraction_cuts.json   les faux départs (étape 6, lecture humaine ou agent)
+#   transcript.txt         le transcript lisible, bornes alignées
+#   _work/                 intermédiaires, gitignorés, régénérables
+#
+# Entre prep et render, l'étape 6 (faux départs) se fait à la main : `derush words`, puis
+# écrire retraction_cuts.json selon la rubrique de SKILL.md. Rien d'autre à toucher.
+#
+# Mesuré 2026-10-07/08 : whisper ~1x temps réel sur CPU, alignement ~80 s pour 4:39,
+# rendu 1080p120 ~ durée de la sortie. Compter ~2.5x la durée de la vidéo au total.
+
+set -euo pipefail
+
+# ROOT se déduit de l'emplacement réel du script (liens suivis) : bin/derush est dans <ROOT>/bin.
+ROOT="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
+D="$ROOT/derush"
+V_="$D/vendor"
+# Finder et launchd n'ont pas Homebrew dans le PATH.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+# Configuration : ~/.config/derush/config (KEY=value, shell). L'environnement l'emporte sur le
+# fichier, une valeur vide compte comme absente, chaque clé est exportée aux processus fils.
+DERUSH_CONFIG="${DERUSH_CONFIG:-$HOME/.config/derush/config}"
+CFG_KEYS="DERUSH_OUT_ROOT DERUSH_VENV DERUSH_PY DERUSH_ASR DERUSH_LLM DERUSH_LOOK DERUSH_OPENAI_MODEL DERUSH_EDIT_PORT DERUSH_OPEN"
+for _k in $CFG_KEYS; do printf -v "_env_$_k" '%s' "${!_k:-}"; done
+if [[ -f "$DERUSH_CONFIG" ]]; then set -a; . "$DERUSH_CONFIG"; set +a; fi
+for _k in $CFG_KEYS; do _v="_env_$_k"; [[ -n "${!_v}" ]] && export "$_k=${!_v}"; done
+unset _k _v
+expand_tilde() { case "$1" in "~") echo "$HOME";; "~/"*) echo "$HOME/${1#\~/}";; *) echo "$1";; esac; }
+for _k in DERUSH_OUT_ROOT DERUSH_VENV DERUSH_PY DERUSH_LOOK; do
+  [[ -n "${!_k:-}" ]] && export "$_k=$(expand_tilde "${!_k}")"
+done
+unset _k
+export DERUSH_OUT_ROOT="${DERUSH_OUT_ROOT:-$HOME/Movies/Derush}"
+export DERUSH_VENV="${DERUSH_VENV:-$HOME/.local/share/derush/venv}"
+export DERUSH_PY="${DERUSH_PY:-$DERUSH_VENV/bin/python}"
+export DERUSH_ASR="${DERUSH_ASR:-qwen}"
+export DERUSH_OPENAI_MODEL="${DERUSH_OPENAI_MODEL:-gpt-4o-mini}"
+export DERUSH_EDIT_PORT="${DERUSH_EDIT_PORT:-8790}"
+export DERUSH_LLM="${DERUSH_LLM:-}" DERUSH_LOOK="${DERUSH_LOOK:-}"
+RUSHS="$DERUSH_OUT_ROOT"
+OPEN="${DERUSH_OPEN:-open}"
+
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+log() { printf '[derush %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+jlen() { "$DERUSH_PY" -I -c "import json,sys;d=json.load(open(sys.argv[1]));print(len(d[sys.argv[2]] if len(sys.argv)>2 else d))" "$@"; }
+
+CMD="${1:-}"; ARG="${2:-}"
+# derush config show : la configuration résolue, jamais une clé API
+if [[ "$CMD" == config ]]; then
+  if [[ "$ARG" == openai-key ]]; then
+    # -w en dernier, sans valeur : security demande la clé lui-même (jamais dans argv, donc pas dans ps)
+    security add-generic-password -U -s derush-openai -a "$USER" -w || exit 1
+    echo "clé enregistrée dans le trousseau"; exit 0
+  fi
+  [[ "$ARG" == show ]] || usage
+  for k in DERUSH_OUT_ROOT DERUSH_PY DERUSH_ASR DERUSH_LLM DERUSH_LOOK DERUSH_OPENAI_MODEL DERUSH_EDIT_PORT; do
+    echo "$k=${!k}"
+  done
+  exit 0
+fi
+# Cycle de vie du studio : /health dit « derush » (distingue notre serveur d'un autre programme sur le port).
+STUDIO_LOGS="$HOME/Library/Logs/derush"
+studio_health() { curl -s -m 2 "http://127.0.0.1:${DERUSH_EDIT_PORT:-8790}/health" 2>/dev/null || true; }
+studio_port_taken() { nc -z 127.0.0.1 "${DERUSH_EDIT_PORT:-8790}" 2>/dev/null; }
+# Rend 0 si le studio derush répond déjà, 1 si le port est libre ; sort en 3 si un autre programme l'occupe.
+studio_up() {
+  [[ "$(studio_health)" == derush ]] && return 0
+  if studio_port_taken; then
+    echo "le port ${DERUSH_EDIT_PORT:-8790} est pris par un autre programme (DERUSH_EDIT_PORT pour en changer)" >&2; exit 3
+  fi
+  return 1
+}
+# derush studio [--no-open] : tout dans le navigateur (déposer une vidéo brute, derush, montage par le texte, rendu).
+# Détaché (nohup) : journal studio.log, pid studio.pid. Un studio déjà là est réutilisé, jamais un second.
+if [[ "$CMD" == studio ]]; then
+  PORT="${DERUSH_EDIT_PORT:-8790}"; mkdir -p "$RUSHS" "$STUDIO_LOGS"
+  NOOPEN=0; for _a in "${@:2}"; do [[ "$_a" == --no-open ]] && NOOPEN=1; done
+  if ! studio_up; then
+    # Propre session (setsid n'existe pas sur macOS) : un lanceur qui tue son groupe ou sort ne l'emporte pas.
+    nohup "$DERUSH_PY" -c 'import os,sys;os.setsid();os.execv(sys.argv[1],sys.argv[1:])' \
+      "$DERUSH_PY" -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT" \
+      </dev/null >>"$STUDIO_LOGS/studio.log" 2>&1 &
+    SPID=$!; echo "$SPID" > "$STUDIO_LOGS/studio.pid"; disown "$SPID" 2>/dev/null || true
+    for _ in $(seq 1 40); do
+      [[ "$(studio_health)" == derush ]] && break
+      kill -0 "$SPID" 2>/dev/null || { echo "le studio s'est arrêté au démarrage : voir $STUDIO_LOGS/studio.log" >&2; exit 1; }
+      sleep 0.5
+    done
+    [[ "$(studio_health)" == derush ]] || { echo "le studio ne répond pas après 20 s : voir $STUDIO_LOGS/studio.log" >&2; exit 1; }
+  fi
+  [[ "$NOOPEN" == 1 ]] || "$OPEN" "http://127.0.0.1:$PORT"
+  exit 0
+fi
+# derush stop : arrête NOTRE serveur (le pid doit être un edit_server.py), jamais un autre processus.
+if [[ "$CMD" == stop ]]; then
+  PIDF="$STUDIO_LOGS/studio.pid"; PORT="${DERUSH_EDIT_PORT:-8790}"
+  if [[ -f "$PIDF" ]]; then
+    SPID="$(cat "$PIDF")"
+    SCMD="$(ps -p "$SPID" -o command= 2>/dev/null || true)"
+    if [[ "$SPID" =~ ^[0-9]+$ ]] && grep -qF -- "$D/edit_server.py" <<<"$SCMD" && grep -qF -- "--port $PORT" <<<"$SCMD"; then
+      kill "$SPID" 2>/dev/null || true
+      for _ in $(seq 1 20); do kill -0 "$SPID" 2>/dev/null || break; sleep 0.25; done
+    fi
+    rm -f "$PIDF"
+  fi
+  exit 0
+fi
+# Un seul endroit décide : source audio seule = aucun flux image, hors pochette (attached_pic=1).
+# sed : ffprobe écrit « 0, » (virgule en trop) quand le flux porte des données annexes (rotation d'un .mov de caméra).
+# prep écrit le verdict dans _work/kind ; tout le reste (shell, studio) lit ce fichier.
+is_audio_only() { # <fichier> : 0 si audio seul
+  local n; n=$(ffprobe -v error -select_streams v -show_entries stream_disposition=attached_pic -of csv=p=0 "$1" 2>/dev/null | sed 's/,.*//' | grep -c '^0$' || true)
+  [[ "$n" == 0 ]]
+}
+if [[ "$CMD" == kind ]]; then
+  [[ -f "$ARG" ]] || { echo "fichier introuvable : $ARG" >&2; exit 1; }
+  if is_audio_only "$ARG"; then echo audio; else echo video; fi
+  exit 0
+fi
+# derush align <audio16k.wav> <asr.json> --out <aligned.json> : alignement mot à mot, sans STEM.
+# Un seul endroit construit l'appel : cmd_prep passe aussi par run_align.
+run_align() { "$DERUSH_PY" "$D/align_words.py" "$@"; }
+if [[ "$CMD" == align ]]; then
+  [[ $# -ge 3 ]] || usage
+  shift; run_align "$@"; exit $?
+fi
+case "$CMD" in studio|stop|config|align|kind) ;; *) [[ -z "$CMD" || -z "$ARG" ]] && usage;; esac
+shift 2
+
+LANG_=fr; NOISE=-35; MIN=0.45; PAD=0.12; FROM=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --lang) LANG_="$2"; shift 2;;
+    --noise) NOISE="$2"; shift 2;;
+    --min) MIN="$2"; shift 2;;
+    --pad) PAD="$2"; shift 2;;
+    --from) FROM="$2"; shift 2;;
+    *) echo "option inconnue : $1" >&2; usage;;
+  esac
+done
+
+# Résolution : un fichier → sa source ; un STEM → la source rangée dans $DERUSH_OUT_ROOT/<STEM>/
+if [[ -f "$ARG" ]]; then
+  V="$(cd "$(dirname "$ARG")" && pwd)/$(basename "$ARG")"
+  STEM="$(basename "${V%.*}")"
+else
+  STEM="$ARG"
+  [[ -f "$RUSHS/$STEM/_work/source.txt" ]] || { echo "aucun rush $STEM dans $RUSHS (lancer prep d'abord)" >&2; exit 1; }
+  V="$(cat "$RUSHS/$STEM/_work/source.txt")"
+  [[ -f "$V" ]] || { echo "source déplacée ? $V introuvable" >&2; exit 1; }
+fi
+OUT="$RUSHS/$STEM"; W="$OUT/_work"
+mkdir -p "$W"
+# KIND = audio | video. Écrit par prep ; un rush d'avant (sans fichier) est une vidéo.
+KIND=video; [[ -f "$W/kind" ]] && KIND="$(cat "$W/kind")"
+EXT=mp4; [[ "$KIND" == audio ]] && EXT=m4a
+
+prompt_for() {
+  case "$1" in
+    en) echo "Um, so, uh, I... I mean, hmm, like, you know, well.";;
+    *)  echo "Euh, alors, hum, je... je voulais, euh, mmh, en fait, bah, voilà.";;
+  esac
+}
+
+# Moteur de transcription : DERUSH_ASR=qwen (défaut) | whisper. Qwen3-ASR écrit les bégaiements et
+# faux départs que whisper efface (mesuré 2026-11-04, C010), ~20x plus vite. Seul son TEXTE sert :
+# align_words.py refait tous les minutages. Qwen absent ou en panne → whisper, dit dans le log.
+export HF_HUB_DISABLE_IMPLICIT_TOKEN=1   # un jeton HF expiré casserait les téléchargements publics
+transcribe() { # <wav> <outdir> → <outdir>/<wavstem>.json
+  local json="$2/$(basename "${1%.*}").json"
+  if [[ "${DERUSH_ASR:-qwen}" == qwen ]]; then
+    if ! "$DERUSH_PY" -c 'import importlib.util as u,sys;sys.exit(u.find_spec("qwen_asr") is None)' 2>/dev/null; then
+      log "qwen absent du venv ($DERUSH_PY) → whisper. Installer : install.sh"
+    elif "$DERUSH_PY" "$D/transcribe_qwen.py" "$1" --lang "$LANG_" --out "$json" >"$2/asr.log" 2>"$2/qwen.err"; then
+      log "transcription qwen3-asr : $(cat "$2/asr.log")"; return 0
+    else
+      log "qwen en panne (voir $2/qwen.err : $(tail -1 "$2/qwen.err")) → whisper"
+    fi
+  fi
+  log "transcription whisper"
+  "$DERUSH_PY" -m whisper "$1" --model large-v3-turbo --device cpu --language "$LANG_" \
+    --output_format json --output_dir "$2" --word_timestamps True \
+    --condition_on_previous_text False --initial_prompt "$(prompt_for "$LANG_")" \
+    >/dev/null 2>"$2/whisper.err" || { cat "$2/whisper.err" >&2; echo "transcription impossible : voir $2/qwen.err et whisper.err" >&2; return 1; }
+}
+
+write_transcript() { # aligned.json → transcript.txt
+  "$DERUSH_PY" -I - "$1" "$2" <<'PY'
+import json,sys
+a=json.load(open(sys.argv[1]))
+with open(sys.argv[2],"w") as f:
+    for s in a["segments"]:
+        ws=s.get("words",[])
+        if not ws: continue
+        f.write(f"[{ws[0]['start']:7.2f} - {ws[-1]['end']:7.2f}] {s['text'].strip()}\n")
+PY
+}
+
+ingest_source() { # range la source dans $OUT si elle n'y est pas déjà
+  case "$V" in
+    "$OUT"/*) ;;
+    *) local dest="$OUT/$(basename "$V")"
+       if [[ -e "$dest" ]]; then log "source déjà présente : $dest (celle de $V n'est pas touchée)"
+       else mv "$V" "$dest"; log "source rangée : $V → $dest"; fi
+       V="$dest";;
+  esac
+  printf '%s\n' "$V" > "$W/source.txt"
+  if is_audio_only "$V"; then KIND=audio; EXT=m4a; else KIND=video; EXT=mp4; fi
+  printf '%s\n' "$KIND" > "$W/kind"
+}
+
+cmd_prep() {
+  ingest_source
+  DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$V")
+  log "prep $STEM ($DUR s) → $OUT"
+  ffmpeg -nostdin -y -loglevel error -i "$V" -vn -ac 1 -ar 16000 "$W/audio.wav"
+  log "1/5 audio ok"
+  "$DERUSH_PY" -I "$D/silence_cuts.py" "$W/audio.wav" --out "$W/silence_cuts.json" --noise "$NOISE" --min "$MIN" --pad "$PAD"
+  log "2/5 silences : $(jlen "$W/silence_cuts.json" filler_cuts)"
+  transcribe "$W/audio.wav" "$W"
+  log "3/5 transcription ok"
+  run_align "$W/audio.wav" "$W/audio.json" --out "$W/aligned.json"
+  log "3b/5 alignement ok"
+  # Le seuil de silence doit passer SOUS chaque mot. IMG_4594 (2026-10-11) : 110 mots sur 806
+  # piquaient sous -35 dB (apartés murmurés, plancher -68 dB), coupés entiers, garde verte.
+  NOISE2=$("$DERUSH_PY" -I "$D/word_peaks.py" "$W/aligned.json" "$W/audio.wav" --noise "$NOISE")
+  if [[ -n "$NOISE2" && "$NOISE2" != "$NOISE" ]]; then
+    "$DERUSH_PY" -I "$D/silence_cuts.py" "$W/audio.wav" --out "$W/silence_cuts.json" --noise "$NOISE2" --min "$MIN" --pad "$PAD"
+    log "2/5 silences recalculés à $NOISE2 dB : $(jlen "$W/silence_cuts.json" filler_cuts) (des mots passaient sous $NOISE dB, voir word_peaks ci-dessus)"
+  fi
+  "$DERUSH_PY" -I "$V_/detect_fillers.py" --segments "$W/aligned.json" --out "$W/filler_cuts.json"
+  "$DERUSH_PY" -I "$D/gap_fillers.py" --words "$W/aligned.json" --out "$W/gap_cuts.json"
+  log "4-5/5 euh écrits : $(jlen "$W/filler_cuts.json"), trous : $(jlen "$W/gap_cuts.json" filler_cuts)"
+  write_transcript "$W/aligned.json" "$OUT/transcript.txt"
+  "$DERUSH_PY" "$D/gap_check.py" "$W" --lang "$LANG_" | sed 's/^/    /'
+  log "5b/5 trous non silencieux contrôlés ($W/gap_check.txt). PAROLE DANS LE TROU = retirer ce trou de gap_cuts.json avant render"
+  [[ -f "$OUT/retraction_cuts.json" ]] || echo '{"retraction_cuts":[]}' > "$OUT/retraction_cuts.json"
+  log "prep terminé. Étape 6 : derush words $STEM, écrire $OUT/retraction_cuts.json, puis derush render $STEM"
+}
+
+cmd_words() {
+  "$DERUSH_PY" -I - "$W/aligned.json" <<'PY'
+import json,sys
+a=json.load(open(sys.argv[1]))
+for s in a["segments"]:
+    ws=s.get("words",[])
+    if not ws: continue
+    print(f"## seg {ws[0]['start']:.2f}-{ws[-1]['end']:.2f}")
+    print(" ".join(f"{w['word'].strip()}@{w['start']:.2f}-{w['end']:.2f}" + ("" if w.get("aligned",True) else "?") for w in ws))
+PY
+}
+
+cmd_render() {
+  [[ -f "$W/aligned.json" ]] || { echo "pas de prep pour $STEM" >&2; exit 1; }
+  DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$V")
+  local RC="$OUT/retraction_cuts.json"
+  log "render $STEM, $(jlen "$RC" retraction_cuts) faux départs"
+  "$DERUSH_PY" -I - "$W" "$OUT/restore.json" <<'PY'
+import json,sys; w=sys.argv[1]
+c=(json.load(open(f"{w}/silence_cuts.json"))["filler_cuts"]
+   +json.load(open(f"{w}/gap_cuts.json"))["filler_cuts"]
+   +json.load(open(f"{w}/filler_cuts.json")))
+try: r=json.load(open(sys.argv[2]))["restore"]
+except FileNotFoundError: r=[]
+# mots rattrapés dans derush edit : toute coupe auto qui les touche tombe
+c=[x for x in c if not any(x["start"]<m["end"] and x["end"]>m["start"] for m in r)]
+json.dump(c,open(f"{w}/all_cuts.json","w"))
+PY
+  local TG; TG=$("$DERUSH_PY" -I "$D/tail_guard.py" "$W") || { log "7a GARDE EN ECHEC (tail_guard.py). Rien rendu."; exit 1; }
+  log "7a $TG"
+  "$DERUSH_PY" -I "$V_/prune.py" --segments "$W/aligned.json" --duration "$DUR" \
+    --filler-cuts "$W/all_cuts.json" --retraction-cuts "$RC" \
+    --min-silence-gap 999 --min-keep 0.1 --out "$W/keep.json" >/dev/null
+  cp "$W/keep.json" "$OUT/keep.json"
+  log "7 fusion ok : $(jlen "$W/keep.json") plages gardées"
+  "$DERUSH_PY" -I "$D/check_clips.py" "$W/aligned.json" "$W/keep.json" "$RC" --silence "$W/silence_cuts.json" --fillers "$W/filler_cuts.json" \
+    || { log "7b GARDE ROUGE : un mot gardé serait rogné. Rien rendu."; exit 1; }
+  log "7b garde verte"
+  local MP4="$OUT/$STEM.derush.$EXT"
+  AUDIO_ONLY=$([[ "$KIND" == audio ]] && echo 1 || echo 0) "$V_/cut.sh" "$V" "$W/keep.json" "$MP4" 2>"$W/cut.err" | tail -1 \
+    || { log "8 COUPE EN ECHEC : $W/cut.err"; tail -5 "$W/cut.err" >&2; exit 1; }
+  log "8 coupe ok"
+  local VD AD
+  if [[ "$KIND" == audio ]]; then  # pas d'image : la durée du fichier fait foi, sync A/V sans objet
+    AD=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$MP4"); VD="$AD"
+  else
+    VD=$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=nw=1:nk=1 "$MP4")
+    AD=$(ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=nw=1:nk=1 "$MP4")
+  fi
+  ffmpeg -nostdin -y -loglevel error -i "$MP4" -vn -ac 1 -ar 16000 "$W/out.wav"
+  transcribe "$W/out.wav" "$W"
+  "$DERUSH_PY" -I "$D/verify_diff.py" "$W/audio.json" "$W/out.json" > "$W/verify_diff.txt" || true
+  KIND="$KIND" "$DERUSH_PY" -I - "$DUR" "$VD" "$AD" "$W/keep.json" "$W/silence_cuts.json" "$W/gap_cuts.json" "$W/filler_cuts.json" "$RC" "$W/verify_diff.txt" "$OUT/cuts.md" "$STEM" <<'PY'
+import json,sys,datetime,os
+dur,vd,ad=map(float,sys.argv[1:4]); keep=json.load(open(sys.argv[4]))
+ns=len(json.load(open(sys.argv[5]))["filler_cuts"]); ng=len(json.load(open(sys.argv[6]))["filler_cuts"])
+nf=len(json.load(open(sys.argv[7]))); ret=json.load(open(sys.argv[8]))["retraction_cuts"]
+diff=open(sys.argv[9]).read().strip().splitlines(); stem=sys.argv[11]
+fmt=lambda s:f"{int(s//60)}:{int(s%60):02d}"
+kept=sum(k["end"]-k["start"] for k in keep)
+lines=[f"# {stem} derush, {datetime.date.today().isoformat()}",
+ "",
+ "- Sujet : (à remplir)",
+ f"- Durée : {fmt(dur)} -> {fmt(vd)} ({vd:.1f} s, {100*(1-vd/dur):.0f} % coupé)",
+ f"- Coupes : {len(keep)-1} raccords. Couches : {ns} silences, {ng} euh cachés (trous), {nf} euh/bégaiements écrits, {len(ret)} faux départs",
+ f"- Garde check_clips : 0 mot rogné.{'' if os.environ.get('KIND')=='audio' else f' Sync A/V : {abs(vd-ad)*1000:.0f} ms.'} Dérive raccords : {(vd-kept)*1000/max(1,len(keep)-1):.0f} ms/raccord",
+ "", "## Faux départs coupés"]
+lines+= [f"- {r['start']:.1f} -> {r['end']:.1f} s : « {r['cue_text']} » ; {r['rationale']}" for r in ret] or ["- aucun"]
+lines+=["", "## Diff transcript source -> sortie (à relire : chaque delete doit être voulu)", "```"]+diff+["```"]
+open(sys.argv[10],"w").write("\n".join(lines)+"\n")
+print("\n".join(lines[3:6]))
+PY
+  log "rapport : $OUT/cuts.md (relire la section diff, remplir Sujet)"
+  if [[ "$KIND" == video ]]; then cmd_fcpxml; cmd_apercu; fi
+}
+
+# Montage par le texte : page locale, on barre des mots, « Valider » écrit retraction_cuts.json
+# (+ restore.json pour les euh/silences rattrapés). Puis derush render. Proxy léger dans _work/.
+cmd_proxy() {
+  if [[ "$KIND" == audio ]]; then
+    [[ -s "$W/proxy.m4a" ]] && return 0
+    log "proxy léger (une fois) : $W/proxy.m4a"
+    ffmpeg -nostdin -y -loglevel error -i "$V" -vn -c:a aac -b:a 96k -movflags +faststart "$W/proxy.tmp.m4a" && mv "$W/proxy.tmp.m4a" "$W/proxy.m4a"
+    return
+  fi
+  [[ -s "$W/proxy.mp4" ]] && return 0
+  log "proxy léger (une fois) : $W/proxy.mp4"
+  ffmpeg -nostdin -y -loglevel error -i "$V" -vf "scale=-2:960" -r 24 -c:v libx264 -preset veryfast -crf 28 -g 24 \
+    -c:a aac -b:a 96k -movflags +faststart "$W/proxy.tmp.mp4" && mv "$W/proxy.tmp.mp4" "$W/proxy.mp4"
+}
+cmd_edit() {
+  [[ -f "$W/aligned.json" ]] || { echo "pas de prep pour $STEM" >&2; exit 1; }
+  cmd_proxy
+  local PORT="${DERUSH_EDIT_PORT:-8790}" URL
+  URL="http://127.0.0.1:$PORT/edit?v=$("$DERUSH_PY" -I -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$STEM")"
+  # Un studio déjà lancé sert la page : on ouvre dessus, jamais un second serveur.
+  if studio_up; then "$OPEN" "$URL"; return 0; fi
+  (sleep 1; "$OPEN" "$URL") &
+  "$DERUSH_PY" -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT"
+}
+
+# L'aperçu à valider porte le look fixé ($DERUSH_LOOK, un .cube) : on valide l'image qui sera
+# publiée, pas la caméra brute. Export ne le lit pas, il reste un fichier de relecture.
+cmd_apercu() {
+  [[ "$KIND" == audio ]] && return 0
+  local cube="${DERUSH_LOOK:-}"
+  [[ -n "$cube" && -f "$cube" ]] || { log "aperçu : aucun look fixé, $STEM.derush.mp4 est l'image brute"; return 0; }
+  ffmpeg -loglevel error -y -i "$OUT/$STEM.derush.mp4" -vf "lut3d=$cube,scale=1080:1920" \
+    -c:v libx264 -crf 20 -preset fast -c:a copy "$OUT/$STEM.apercu-look.mp4" \
+    && log "aperçu avec le look : $OUT/$STEM.apercu-look.mp4 (c'est lui qu'on valide)"
+}
+
+cmd_logos() {
+  [[ "$KIND" == audio ]] && { echo "pas de logos sur un audio" >&2; exit 1; }
+  [[ -f "$OUT/logos.json" ]] || { echo "pas de $OUT/logos.json : {\"cues\":[{\"logo\":\"canva\",\"t\":14.27}]} (t = instant SOURCE lu dans derush words)" >&2; exit 1; }
+  [[ -f "$OUT/$STEM.derush.mp4" ]] || { echo "pas de montage pour $STEM (lancer render)" >&2; exit 1; }
+  "$DERUSH_PY" -I "$D/logos.py" "$OUT" "$@"
+  log "logos : $OUT/$STEM.logos.mp4 (export le prend s'il existe ; le supprimer pour exporter sans)"
+}
+
+cmd_fcpxml() {
+  [[ "$KIND" == audio ]] && { echo "source audio : pas de timeline vidéo" >&2; exit 1; }
+  [[ -f "$OUT/keep.json" ]] || { echo "pas de keep.json pour $STEM (lancer render)" >&2; exit 1; }
+  "$DERUSH_PY" -I "$D/fcpxml.py" "$V" "$OUT/keep.json" "$OUT/$STEM.fcpxml" "$STEM"
+  log "timeline : $OUT/$STEM.fcpxml (Resolve : File > Import > Timeline)"
+}
+
+cmd_export_audio() { # audio seul : <STEM>.export.m4a, -14 LUFS, AAC 192k, faststart. Même mesure en deux passes.
+  local SRC="$OUT/$STEM.derush.m4a" EXP="$OUT/$STEM.export.m4a"
+  [[ -n "$FROM" ]] && { SRC="$FROM"; log "export depuis $FROM (montage retouché à la main)"; }
+  [[ -f "$SRC" ]] || { echo "pas de montage pour $STEM (lancer render)" >&2; exit 1; }
+  local M; M=$(ffmpeg -nostdin -i "$SRC" -af "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json" -f null - 2>&1 | "$DERUSH_PY" -I "$D/loudnorm_measure.py")
+  ffmpeg -nostdin -y -loglevel error -i "$SRC" -vn \
+    -af "loudnorm=I=-14:TP=-1.5:LRA=11:$M:linear=true" -c:a aac -b:a 192k -ar 48000 -ac 2 \
+    -movflags +faststart "$EXP"
+  local LUFS; LUFS=$(ffmpeg -nostdin -i "$EXP" -af "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=summary" -f null - 2>&1 | grep "Input Integrated" | awk '{print $3}')
+  log "export loudness : $LUFS LUFS (cible -14)"
+  log "export : $EXP ($(du -h "$EXP" | cut -f1))"
+}
+
+cmd_export() {
+  [[ "$KIND" == audio ]] && { cmd_export_audio; return; }
+  local MP4="$OUT/$STEM.derush.mp4" REEL="$OUT/$STEM.reel.mp4"
+  [[ -f "$OUT/$STEM.logos.mp4" ]] && { MP4="$OUT/$STEM.logos.mp4"; log "export depuis la version avec logos"; }
+  [[ -n "$FROM" ]] && { MP4="$FROM"; log "export depuis $FROM (montage retouché à la main)"; }
+  [[ -f "$MP4" ]] || { echo "pas de montage pour $STEM (lancer render)" >&2; exit 1; }
+  # Spec de sortie, décidée 2026-10-08 : 9:16 natif iPhone conservé (1080x1920 après rotation),
+  # 30 fps (les plateformes ré-encodent à 30, et 120 fps triple le poids pour rien sur un visage),
+  # loudness -14 LUFS (voix de téléphone, niveau uniforme d'une vidéo à l'autre), faststart.
+  # loudnorm en DEUX passes : la passe unique rendait -15.8 LUFS pour -14 visés (mesuré
+  # IMG_4567, 2026-10-08). Passe 1 mesure, passe 2 corrige en mode linéaire avec les mesures.
+  local M; M=$(ffmpeg -nostdin -i "$MP4" -af "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json" -f null - 2>&1 | "$DERUSH_PY" -I "$D/loudnorm_measure.py")
+  ffmpeg -nostdin -y -loglevel error -i "$MP4" \
+    -vf "fps=30,scale=w=1080:h=1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \
+    -c:v libx264 -preset medium -crf 20 -profile:v high -level 4.1 \
+    -af "loudnorm=I=-14:TP=-1.5:LRA=11:$M:linear=true" -c:a aac -b:a 192k -ar 48000 -ac 2 \
+    -movflags +faststart "$REEL"
+  local LUFS; LUFS=$(ffmpeg -nostdin -i "$REEL" -af "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=summary" -f null - 2>&1 | grep "Input Integrated" | awk '{print $3}')
+  log "export loudness : $LUFS LUFS (cible -14)"
+  local SZ; SZ=$(du -h "$REEL" | cut -f1)
+  log "export : $REEL ($SZ, $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$REEL"))"
+}
+
+case "$CMD" in
+  prep) cmd_prep;;
+  words) cmd_words;;
+  edit) cmd_edit;;
+  proxy) cmd_proxy;;
+  render) cmd_render;;
+  logos) cmd_logos "${@:3}";;
+  fcpxml) cmd_fcpxml;;
+  apercu) cmd_apercu;;
+  export) cmd_export;;
+  all) cmd_prep; cmd_render; cmd_export;;
+  *) usage;;
+esac
