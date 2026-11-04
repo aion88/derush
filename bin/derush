@@ -106,7 +106,7 @@ studio_up() {
   return 1
 }
 # derush studio [--no-open] : tout dans le navigateur (déposer une vidéo brute, derush, montage par le texte, rendu).
-# Détaché (nohup) : journal studio.log, pid studio.pid. Un studio déjà là est réutilisé, jamais un second.
+# Détaché (nohup) : journal studio.log, pid studio-<port>.pid (un par port : deux studios ne s'écrasent pas). Un studio déjà là est réutilisé, jamais un second.
 if [[ "$CMD" == studio ]]; then
   PORT="${DERUSH_EDIT_PORT:-8790}"; mkdir -p "$RUSHS" "$STUDIO_LOGS"
   NOOPEN=0; for _a in "${@:2}"; do [[ "$_a" == --no-open ]] && NOOPEN=1; done
@@ -115,7 +115,7 @@ if [[ "$CMD" == studio ]]; then
     nohup "$DERUSH_PY" -c 'import os,sys;os.setsid();os.execv(sys.argv[1],sys.argv[1:])' \
       "$DERUSH_PY" -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT" \
       </dev/null >>"$STUDIO_LOGS/studio.log" 2>&1 &
-    SPID=$!; echo "$SPID" > "$STUDIO_LOGS/studio.pid"; disown "$SPID" 2>/dev/null || true
+    SPID=$!; echo "$SPID" > "$STUDIO_LOGS/studio-$PORT.pid"; disown "$SPID" 2>/dev/null || true
     for _ in $(seq 1 40); do
       [[ "$(studio_health)" == derush ]] && break
       kill -0 "$SPID" 2>/dev/null || { echo "le studio s'est arrêté au démarrage : voir $STUDIO_LOGS/studio.log" >&2; exit 1; }
@@ -128,9 +128,10 @@ if [[ "$CMD" == studio ]]; then
 fi
 # derush stop : arrête NOTRE serveur (le pid doit être un edit_server.py), jamais un autre processus.
 if [[ "$CMD" == stop ]]; then
-  PIDF="$STUDIO_LOGS/studio.pid"; PORT="${DERUSH_EDIT_PORT:-8790}"
-  if [[ -f "$PIDF" ]]; then
-    SPID="$(cat "$PIDF")"
+  PORT="${DERUSH_EDIT_PORT:-8790}"; PIDF="$STUDIO_LOGS/studio-$PORT.pid"
+  # Sans pidfile (perdu, ou studio lancé avant la v0.1.1) : le processus qui écoute sur le port, s'il est bien le nôtre.
+  SPID="$(cat "$PIDF" 2>/dev/null || lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  if [[ -n "$SPID" ]]; then
     SCMD="$(ps -p "$SPID" -o command= 2>/dev/null || true)"
     if [[ "$SPID" =~ ^[0-9]+$ ]] && grep -qF -- "$D/edit_server.py" <<<"$SCMD" && grep -qF -- "--port $PORT" <<<"$SCMD"; then
       kill "$SPID" 2>/dev/null || true

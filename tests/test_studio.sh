@@ -18,7 +18,7 @@ count() { pgrep -f "edit_server.py $T/out" | wc -l | tr -d ' '; }
 out="$("$D" studio --no-open 2>&1)"; rc=$?
 assert_eq 0 "$rc" "studio --no-open exits 0"
 assert_eq derush "$(curl -s "http://127.0.0.1:$PORT/health")" "/health answers derush"
-pid1="$(cat "$HOME/Library/Logs/derush/studio.pid")"
+pid1="$(cat "$HOME/Library/Logs/derush/studio-$PORT.pid")"
 assert_eq 1 "$(count)" "one server process"
 
 # 2. second start reuses; with an opener it opens once, without --no-open
@@ -30,7 +30,7 @@ OP
 chmod +x "$T/opener"
 DERUSH_OPEN="$T/opener" "$D" studio >/dev/null 2>&1; rc=$?
 assert_eq 0 "$rc" "second studio exits 0"
-assert_eq "$pid1" "$(cat "$HOME/Library/Logs/derush/studio.pid")" "same pid after reuse"
+assert_eq "$pid1" "$(cat "$HOME/Library/Logs/derush/studio-$PORT.pid")" "same pid after reuse"
 assert_eq 1 "$(count)" "still one server process"
 assert_contains "$(cat "$T/opened.log" 2>/dev/null)" "http://127.0.0.1:$PORT" "reuse opened the browser"
 # edit <STEM> on a running studio: opens /edit?v=, no second server
@@ -72,19 +72,30 @@ assert_eq 0 "$rc" "stop exits 0"
 sleep 1
 curl -s -o /dev/null "http://127.0.0.1:$PORT/health" && up=1 || up=0
 assert_eq 0 "$up" "port closed after stop"
-[ -e "$HOME/Library/Logs/derush/studio.pid" ] && ok=1 || ok=0
+[ -e "$HOME/Library/Logs/derush/studio-$PORT.pid" ] && ok=1 || ok=0
 assert_eq 0 "$ok" "pidfile removed"
 "$D" stop >/dev/null 2>&1; assert_eq 0 "$?" "stop when not running exits 0"
 
 # 4b. stop refuses a pid that is not our server (bogus pidfile -> sleep)
 sleep 60 & SL=$!
-mkdir -p "$HOME/Library/Logs/derush"; echo "$SL" > "$HOME/Library/Logs/derush/studio.pid"
+mkdir -p "$HOME/Library/Logs/derush"; echo "$SL" > "$HOME/Library/Logs/derush/studio-$PORT.pid"
 "$D" stop >/dev/null 2>&1
 kill -0 "$SL" 2>/dev/null && ok=1 || ok=0
 assert_eq 1 "$ok" "stop leaves a foreign pid alive"
-[ -e "$HOME/Library/Logs/derush/studio.pid" ] && ok=1 || ok=0
+[ -e "$HOME/Library/Logs/derush/studio-$PORT.pid" ] && ok=1 || ok=0
 assert_eq 0 "$ok" "bogus pidfile removed"
 kill "$SL" 2>/dev/null
+
+# 4c. two studios on two ports: stopping one leaves the other's pidfile; a lost pidfile still stops ours (lsof)
+"$D" studio --no-open >/dev/null 2>&1
+DERUSH_EDIT_PORT=$((PORT+1)) "$D" studio --no-open >/dev/null 2>&1
+DERUSH_EDIT_PORT=$((PORT+1)) "$D" stop >/dev/null 2>&1
+[ -e "$HOME/Library/Logs/derush/studio-$PORT.pid" ] && ok=1 || ok=0
+assert_eq 1 "$ok" "stopping port+1 keeps port's pidfile"
+rm -f "$HOME/Library/Logs/derush/studio-$PORT.pid"
+"$D" stop >/dev/null 2>&1; sleep 1
+curl -s -o /dev/null "http://127.0.0.1:$PORT/health" && up=1 || up=0
+assert_eq 0 "$up" "stop without pidfile stops our server found on the port"
 
 # 5. foreign program on the port
 "$DERUSH_PY" -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1 & HTTP_PID=$!
