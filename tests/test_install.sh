@@ -57,8 +57,24 @@ rm "$HOME/.claude/skills/derush"; mkdir -p "$HOME/.claude/skills/derush"; echo m
 out="$("$ROOT/install.sh" 2>&1)"; rc=$?
 assert_eq 1 "$rc" "real skills dir: exit 1"
 assert_contains "$out" "existe déjà, pas touché" "real skills dir reported"
+assert_contains "$out" "mv " "real dir: hint is mv, not rm"
+assert_eq 0 "$(echo "$out" | grep -c 'rm -rf')" "real dir: no rm -rf anywhere"
 assert_eq mine "$(cat "$HOME/.claude/skills/derush/x")" "real skills dir untouched"
 rm -rf "$HOME/.claude/skills/derush"
+
+# 5b. a link to somewhere else: reported with a plain `rm <link>` hint
+ln -s /tmp "$HOME/.claude/skills/derush"
+out="$("$ROOT/install.sh" 2>&1)"
+assert_contains "$out" "rm \"$HOME/.claude/skills/derush\" && ./install.sh" "foreign link: hint is rm of the link only"
+assert_eq /tmp "$(readlink "$HOME/.claude/skills/derush")" "foreign link untouched"
+rm "$HOME/.claude/skills/derush"
+
+# 5c. a correct link made through a symlinked alias of the repo reads OK
+ln -s "$ROOT" "$T/alias"
+ln -s "$T/alias/skill" "$HOME/.claude/skills/derush"
+out="$("$ROOT/install.sh" 2>&1)"; rc=$?
+assert_contains "$out" "OK skill" "alias-path link reads OK"
+assert_eq 0 "$rc" "alias-path link: exit 0"
 
 # 6. --at-login writes the LaunchAgent in the throwaway HOME, loads nothing
 "$ROOT/install.sh" --at-login >/dev/null 2>&1
@@ -69,6 +85,16 @@ assert_eq false "$(plutil -extract KeepAlive raw -o - "$P")" "KeepAlive false"
 assert_eq true "$(plutil -extract RunAtLoad raw -o - "$P")" "RunAtLoad true"
 assert_contains "$(plutil -p "$P")" "$ROOT/bin/derush" "plist runs bin/derush"
 assert_contains "$(plutil -p "$P")" "--no-open" "plist passes --no-open"
+out="$("$ROOT/install.sh" --at-login 2>&1)"
+assert_contains "$out" "OK LaunchAgent" "second --at-login prints OK"
+assert_eq 0 "$(echo "$out" | grep -c 'INSTALLÉ LaunchAgent')" "second --at-login does not reinstall"
+
+# 6b. build failure shows the reason
+mkdir -p "$T/ro"; chmod 555 "$T/ro"
+out="$(DERUSH_APP_DIR="$T/ro" "$ROOT/install.sh" 2>&1)"
+chmod 755 "$T/ro"
+assert_contains "$out" "MANQUE Derush.app (échec :" "app build failure carries a reason"
+assert_contains "$out" "modifiable" "reason is shown"
 
 # 7. --models: only when both models are already cached (never a real download in tests)
 if [ -f "$XDG_CACHE_HOME/whisper/large-v3-turbo.pt" ] && [ -d "$HF_HOME/hub/models--Qwen--Qwen3-ASR-1.7B" ]; then

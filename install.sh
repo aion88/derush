@@ -45,10 +45,7 @@ elif curl -LsSf https://astral.sh/uv/install.sh | sh >&2 && command -v uv >/dev/
 else miss "uv" "curl -LsSf https://astral.sh/uv/install.sh | sh"; fi
 
 # 4. venv + paquets (~2 à 3 Go avec torch)
-pkgs_ok() { [ -x "$DERUSH_PY" ] && "$DERUSH_PY" -I -c '
-from importlib.metadata import version
-import sys
-for p in sys.argv[1:]: version(p)' $PKGS >/dev/null 2>&1; }
+pkgs_ok() { [ -x "$DERUSH_PY" ] && "$DERUSH_PY" -W ignore -c "import torch, torchaudio, numpy, soundfile, qwen_asr, whisper" >/dev/null 2>&1; }
 if pkgs_ok; then ok "venv $DERUSH_VENV ($PKGS)"
 elif [ $CHECK = 1 ]; then miss "venv et paquets Python" "./install.sh"
 elif ! command -v uv >/dev/null 2>&1; then miss "venv et paquets Python" "installer uv d'abord"
@@ -61,8 +58,9 @@ fi
 # 5. liens : derush dans ~/.local/bin, la skill dans ~/.claude/skills
 link() { # target linkpath what
   local t="$1" l="$2" w="$3"
-  if [ -L "$l" ] && [ "$(readlink "$l")" = "$t" ]; then ok "$w"
-  elif [ -e "$l" ] || [ -L "$l" ]; then miss "$w : $l existe déjà, pas touché" "rm -rf \"$l\" && ./install.sh"
+  if [ -L "$l" ] && [ "$(realpath "$l" 2>/dev/null)" = "$(realpath "$t")" ]; then ok "$w"
+  elif [ -L "$l" ]; then miss "$w : $l existe déjà (lien vers $(readlink "$l")), pas touché" "rm \"$l\" && ./install.sh"
+  elif [ -e "$l" ]; then miss "$w : $l existe déjà, pas touché" "inspecte-le, puis le déplacer : mv \"$l\" \"$l.bak\" && ./install.sh"
   elif [ $CHECK = 1 ]; then miss "$w" "./install.sh"
   elif mkdir -p "$(dirname "$l")" && ln -s "$t" "$l"; then did "$w"
   else miss "$w" "ln -s \"$t\" \"$l\""; fi
@@ -105,9 +103,11 @@ else
   built=""
   for d in "${APPDIRS[@]}"; do
     mkdir -p "$d" 2>/dev/null
-    if [ -w "$d" ] && bash "$ROOT/app/build-app.sh" "$d" >/dev/null 2>&1; then built="$d"; break; fi
+    [ -w "$d" ] || { buildlog="$d n'est pas modifiable"; continue; }
+    if buildlog="$(bash "$ROOT/app/build-app.sh" "$d" 2>&1)"; then built="$d"; break; fi
   done
-  [ -n "$built" ] && did "Derush.app ($built)" || miss "Derush.app" "bash \"$ROOT/app/build-app.sh\" ~/Applications"
+  if [ -n "$built" ]; then did "Derush.app ($built)"
+  else miss "Derush.app (échec : $(printf '%s' "${buildlog:-}" | tail -n 3 | tr '\n' ' '))" "bash \"$ROOT/app/build-app.sh\" ~/Applications"; fi
 fi
 
 # 8. modèles : à la première utilisation, sauf --models
@@ -128,7 +128,7 @@ fi
 if [ $ATLOGIN = 1 ] && [ $CHECK = 0 ]; then
   PL="$HOME/Library/LaunchAgents/com.derush.studio.plist"
   mkdir -p "$(dirname "$PL")" "$HOME/Library/Logs/derush"
-  cat > "$PL" <<PLEOF
+  NEWPL="$(cat <<PLEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -138,6 +138,11 @@ if [ $ATLOGIN = 1 ] && [ $CHECK = 0 ]; then
 <key>KeepAlive</key><false/>
 </dict></plist>
 PLEOF
+)"
+  loaded() { [ "${DERUSH_NO_LAUNCHCTL:-}" = 1 ] || launchctl print "gui/$(id -u)/com.derush.studio" >/dev/null 2>&1; }
+  if [ -f "$PL" ] && [ "$(cat "$PL")" = "$NEWPL" ] && loaded; then ok "LaunchAgent $PL"
+  else
+  printf '%s\n' "$NEWPL" > "$PL"
   if plutil -lint "$PL" >/dev/null 2>&1; then
     if [ "${DERUSH_NO_LAUNCHCTL:-}" = 1 ]; then did "LaunchAgent $PL (non chargé : DERUSH_NO_LAUNCHCTL=1)"
     else
@@ -145,6 +150,7 @@ PLEOF
       launchctl bootstrap "gui/$(id -u)" "$PL" >/dev/null 2>&1 && did "LaunchAgent $PL" || miss "LaunchAgent" "launchctl bootstrap gui/$(id -u) \"$PL\""
     fi
   else miss "LaunchAgent (plist invalide)" "relancer ./install.sh --at-login"; fi
+  fi
 fi
 
 exit $MISSING
