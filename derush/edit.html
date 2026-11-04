@@ -57,6 +57,7 @@
     <div id="result" hidden style="margin-top:12px;font-size:13px">
       <b>Résultat monté</b> <button id="showRes" style="color:var(--ink);border-color:#999;padding:1px 8px">voir</button>
       <button id="showSrc" style="color:var(--ink);border-color:#999;padding:1px 8px">revenir au brut</button>
+      <button id="reveal" style="color:var(--ink);border-color:#999;padding:1px 8px">ouvrir dans le Finder</button>
     </div>
     <div class="help">
       Clic sur un mot : la vidéo y saute. <kbd>Espace</kbd> lecture.<br>
@@ -313,6 +314,7 @@ $("#save").onclick = async () => {
 };
 $("#showRes").onclick = showResult;
 $("#showSrc").onclick = showSource;
+$("#reveal").onclick = () => fetch("/reveal" + q, { method: "POST" });
 </script>
 </body>
 </html>

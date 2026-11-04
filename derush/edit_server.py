@@ -379,6 +379,11 @@ class H(BaseHTTPRequestHandler):
             if path == "/proxy":
                 start_job(stem, "proxy", [[DERUSH, "proxy", stem]])
                 return self._json(job_state(stem))
+            if path == "/reveal":  # le montage (ou le dossier) sélectionné dans le Finder
+                out = paths(stem)[0]
+                t = next((f for f in (os.path.join(out, f"{stem}.derush.{e}") for e in ("mp4", "m4a")) if os.path.exists(f)), out)
+                subprocess.run([os.environ.get("DERUSH_OPEN", "open"), "-R", t], capture_output=True)
+                return self._json({"path": t})
             if path == "/render":
                 start_job(stem, "render", [[DERUSH, "render", stem]])
                 return self._json(job_state(stem))
