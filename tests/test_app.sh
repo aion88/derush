@@ -61,7 +61,7 @@ assert_eq 1 "$ok" "render job through the studio produced derush.mp4"
 # 5. failure path: foreign program on the port -> notification command, no browser
 HOME="$T/home" DERUSH_EDIT_PORT=$PORT "$ROOT/bin/derush" stop >/dev/null 2>&1; sleep 1
 "$DERUSH_PY" -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1 & HP=$!
-sleep 1
+for _ in $(seq 1 20); do nc -z 127.0.0.1 $PORT 2>/dev/null && break; sleep 0.5; done
 mkdir -p "$T/shim"
 cat > "$T/shim/osascript" <<OS
 #!/bin/sh
@@ -77,4 +77,16 @@ assert_contains "$(cat "$T/notif.log" 2>/dev/null)" "display notification" "fail
 assert_contains "$(cat "$T/notif.log" 2>/dev/null)" "pris par un autre programme" "notification carries the message"
 assert_contains "$(cat "$T/notif.log" 2>/dev/null)" "studio.log" "notification names the log"
 assert_eq 0 "$(wc -c < "$T/opened.log" | tr -d ' ')" "no browser opened on failure"
+
+# 6. a clone under a path with a space AND an apostrophe: ROOT must be baked safely
+HOME="$T/home" DERUSH_EDIT_PORT=$PORT "$ROOT/bin/derush" stop >/dev/null 2>&1; sleep 1
+Q="$T/Cynthia's Projects/der ush"; mkdir -p "$Q" "$T/dest2"
+cp -R "$ROOT/bin" "$ROOT/derush" "$ROOT/app" "$Q/"
+bash "$Q/app/build-app.sh" "$T/dest2" >/dev/null 2>&1
+: > "$T/opened.log"
+env -i HOME="$T/home" DERUSH_EDIT_PORT=$PORT DERUSH_CONFIG="$T/none" DERUSH_OUT_ROOT="$T/out" \
+  DERUSH_OPEN="$T/opener" "$T/dest2/Derush.app/Contents/MacOS/Derush" >/dev/null 2>&1; rc=$?
+assert_eq 0 "$rc" "apostrophe path: launcher exits 0"
+assert_eq derush "$(curl -s "http://127.0.0.1:$PORT/health")" "apostrophe path: studio answers"
+assert_contains "$(ps -ax -o command= | grep edit_server.py | grep -v grep)" "$Q/derush/edit_server.py" "apostrophe path: it runs that copy's server"
 summary

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Derush.app launcher. ROOT is baked in by build-app.sh. Finder gives a bare PATH.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
-ROOT='@ROOT@'
+ROOT=@ROOT@
 LOG="$HOME/Library/Logs/derush/studio.log"
 err="$("$ROOT/bin/derush" studio 2>&1)"; rc=$?
 if [ "$rc" -ne 0 ]; then
