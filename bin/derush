@@ -283,7 +283,7 @@ cmd_edit() {
   [[ -f "$W/aligned.json" ]] || { echo "pas de prep pour $STEM" >&2; exit 1; }
   cmd_proxy
   local PORT="${DERUSH_EDIT_PORT:-8790}"
-  (sleep 1; "$OPEN" "http://127.0.0.1:$PORT/edit?v=$STEM") &
+  (sleep 1; "$OPEN" "http://127.0.0.1:$PORT/edit?v=$(python3 -I -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$STEM")") &
   python3 -I "$D/edit_server.py" "$RUSHS" "$ROOT/bin/derush" --port "$PORT"
 }
 

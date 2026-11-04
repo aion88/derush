@@ -40,7 +40,25 @@ L="$(mktemp -d)"; ln -s "$ROOT/bin/derush" "$L/derush"
 out="$(env -i HOME="$H" PATH="$PATH" "$L/derush" config show 2>&1)"
 assert_contains "$out" "DERUSH_PY=$H/.local/share/derush/venv/bin/python" "config show through a symlink"
 
-# 5. Keys are exported to children (config sourced under set -a).
-out="$(run "$H" -- config show 2>&1)"
-case "$out" in *OPENAI_API_KEY*|*sk-*) FAILS=$((FAILS+1)); echo "FAIL - key leaked";; *) PASSES=$((PASSES+1)); echo "ok   - no key in config show";; esac
+# 5. Config keys are exported to children; edit URL percent-encodes the STEM.
+STUB="$(mktemp -d)"; REC="$STUB/rec"
+printf '#!/bin/sh\nprintf "%%s\\n%%s\\n" "$DERUSH_FOO_TEST" "$1" > "%s"\n' "$REC" > "$STUB/open.sh"; chmod +x "$STUB/open.sh"
+H2="$(mktemp -d)"; mkdir -p "$H2/.config/derush"
+printf 'DERUSH_FOO_TEST=1\nDERUSH_OPEN=%s\nDERUSH_OUT_ROOT=%s\nDERUSH_EDIT_PORT=8799\n' "$STUB/open.sh" "$H2/rushs" > "$H2/.config/derush/config"
+STEM2="Movie on 11-10-2026 at 20.42 #2"
+mkdir -p "$H2/rushs/$STEM2/_work"; : > "$H2/src.mov"; echo x > "$H2/rushs/$STEM2/_work/proxy.mp4"; echo '{}' > "$H2/rushs/$STEM2/_work/aligned.json"
+echo "$H2/src.mov" > "$H2/rushs/$STEM2/_work/source.txt"
+env -i HOME="$H2" PATH="$PATH" "$ROOT/bin/derush" edit "$STEM2" >/dev/null 2>&1 &
+EPID=$!
+for _ in $(seq 1 50); do [ -s "$REC" ] && break; sleep 0.2; done
+pkill -P $EPID 2>/dev/null; kill $EPID 2>/dev/null; wait $EPID 2>/dev/null
+rec="$(cat "$REC" 2>/dev/null)"
+assert_contains "$rec" "1" "config key exported to child (DERUSH_FOO_TEST)"
+assert_contains "$rec" "/edit?v=Movie%20on%2011-10-2026%20at%2020.42%20%232" "STEM percent-encoded in edit URL"
+
+# 6. The API key never shows in config show, from env or from the config file.
+printf 'OPENAI_API_KEY=sk-fake-123\n' >> "$H2/.config/derush/config"
+out="$(run "$H2" OPENAI_API_KEY=sk-fake-123 -- config show 2>&1)"
+case "$out" in *sk-fake-123*) FAILS=$((FAILS+1)); echo "FAIL - key leaked in config show";; *) PASSES=$((PASSES+1)); echo "ok   - key not in config show";; esac
+assert_contains "$out" "DERUSH_EDIT_PORT=8799" "config show still prints with a key present"
 summary
