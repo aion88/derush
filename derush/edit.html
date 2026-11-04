@@ -57,7 +57,8 @@
     <div id="result" hidden style="margin-top:12px;font-size:13px">
       <b>Résultat monté</b> <button id="showRes" style="color:var(--ink);border-color:#999;padding:1px 8px">voir</button>
       <button id="showSrc" style="color:var(--ink);border-color:#999;padding:1px 8px">revenir au brut</button>
-      <button id="reveal" style="color:var(--ink);border-color:#999;padding:1px 8px">ouvrir dans le Finder</button>
+      <div style="margin-top:10px"><button id="reveal" class="primary" style="font-size:15px;padding:8px 16px">Ouvrir ma vidéo dans le Finder</button></div>
+      <div id="where" style="margin-top:6px;color:var(--mute);word-break:break-all"></div>
     </div>
     <div class="help">
       Clic sur un mot : la vidéo y saute. <kbd>Espace</kbd> lecture.<br>
@@ -311,10 +312,15 @@ $("#save").onclick = async () => {
   if (j.error) { $("#status").textContent = "Montage en échec : " + (j.tail || []).slice(-2).join(" ") + warn; return; }
   $("#status").textContent = (EXT === "m4a" ? "Audio monté. Fichier : " + STEM + ".derush.m4a" : "Vidéo montée. Fichier : " + STEM + ".derush.mp4") + " dans son dossier." + warn;
   $("#result").hidden = false; showResult();
+  reveal();
 };
 $("#showRes").onclick = showResult;
 $("#showSrc").onclick = showSource;
-$("#reveal").onclick = () => fetch("/reveal" + q, { method: "POST" });
+async function reveal() {
+  const r = await fetch("/reveal" + q, { method: "POST" }).then(r => r.json()).catch(() => ({}));
+  if (r.path) $("#where").textContent = "Ta vidéo est ici : " + r.path;
+}
+$("#reveal").onclick = reveal;
 </script>
 </body>
 </html>
