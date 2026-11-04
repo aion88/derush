@@ -11,9 +11,23 @@ Nothing leaves your machine except the optional "tight edit" suggestions (see be
 
 ## Install
 
+One line in Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aion88/derush/main/install.sh | bash
+```
+
+It clones derush into `~/.local/share/derush/src` and installs everything. Run the same line again to update. With a flag: `curl -fsSL ... | bash -s -- --models`.
+
+Or from a clone:
+
 ```bash
 git clone https://github.com/aion88/derush && cd derush && ./install.sh
 ```
+
+Watch the install (2 min 30, silent):
+
+[![Install video, English](media/install-en.png)](media/install-en.mp4)
 
 The installer is safe to run again. It builds a private Python environment, links `derush` into `~/.local/bin`, links the skill into `~/.claude/skills/derush` and builds `Derush.app`. It tells you what is missing and the exact command to fix it.
 
@@ -118,9 +132,23 @@ derush enlève le superflu des vidéos face caméra sur macOS : silences, « euh
 
 ### Installation
 
+Une ligne dans le Terminal :
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aion88/derush/main/install.sh | bash
+```
+
+derush est cloné dans `~/.local/share/derush/src` et tout s'installe. La même ligne relancée met à jour. Avec une option : `curl -fsSL ... | bash -s -- --models`.
+
+Ou depuis un clone :
+
 ```bash
 git clone https://github.com/aion88/derush && cd derush && ./install.sh
 ```
+
+La vidéo de l'installation (2 min 30, sans son) :
+
+[![Vidéo d'installation, français](media/install-fr.png)](media/install-fr.mp4)
 
 L'installeur peut être relancé sans risque. Il crée un environnement Python privé, relie `derush` dans `~/.local/bin`, relie la skill dans `~/.claude/skills/derush` et construit `Derush.app`. Il dit ce qui manque et la commande exacte pour le réparer.
 
