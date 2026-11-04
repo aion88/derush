@@ -311,6 +311,8 @@ $("#save").onclick = async () => {
   $("#save").disabled = false;
   if (j.error) { $("#status").textContent = "Montage en échec : " + (j.tail || []).slice(-2).join(" ") + warn; return; }
   $("#status").textContent = (EXT === "m4a" ? "Audio monté. Fichier : " + STEM + ".derush.m4a" : "Vidéo montée. Fichier : " + STEM + ".derush.mp4") + " dans son dossier." + warn;
+  const b = document.createElement("button"); b.className = "primary"; b.style.marginLeft = "8px";
+  b.textContent = "Ouvrir dans le Finder"; b.onclick = reveal; $("#status").append(b);
   $("#result").hidden = false; showResult();
   reveal();
 };
