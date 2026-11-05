@@ -7,8 +7,10 @@ modèle (blocs, plages, coupe, insertion), le placement d'une reprise, le plan d
 rendu. `bin/derush projet …`, le studio et les tests passent tous par lui.
 
 Usage (root = $DERUSH_OUT_ROOT) :
-  projet.py new <root> <nom> [STEM…]     crée un projet (séquence = blocs du premier rush)
-  projet.py add <root> <nom> <STEM>      ajoute un rush
+  projet.py new <root> <nom> [STEM…]     crée un projet (séquence = un clip par prise, dans l'ordre)
+  projet.py add <root> <nom> <STEM>      ajoute un rush (son clip arrive en fin de piste)
+  projet.py op <root> <nom> '<json>'     une opération de piste : {"op":"couper","i","t"}, {"op":"deplacer","i","j"},
+                                         {"op":"retirer","i"}, {"op":"trimmer","i","cote":"debut|fin","t"}
   projet.py kind <root> <nom>            audio ou video
   projet.py resume <root> <nom>          durées et nombre de fondus (JSON)
   projet.py render <root> <nom>          monte le projet (mp4|m4a, fcpxml, cuts.md)
@@ -220,6 +222,17 @@ def blocs(root, stem):
             n = fus[k + 1][0]
             fin = (ms[g[-1]]["e"] + ms[n]["s"]) / 2
         out.append({"rush": stem, "debut": round(debut, 3), "fin": round(fin, 3)})
+    kp = garde(root, stem)
+    if kp is not None:  # un trou coupé par le montage du rush : les deux blocs prennent chacun son bord gardé
+        for k in range(len(out) - 1):
+            m = out[k]["fin"]
+            if any(a - 1e-9 <= m <= z + 1e-9 for a, z in kp):
+                continue
+            avant = [z for a, z in kp if z <= m]
+            apres = [a for a, z in kp if a >= m]
+            if avant and apres:
+                out[k]["fin"] = round(max(avant), 3)
+                out[k + 1]["debut"] = round(min(apres), 3)
     return out
 
 
@@ -249,6 +262,9 @@ def mots_du_bloc(root, bloc):
 
 
 def plages(root, bloc):
+    """Ce que le clip joue. La première plage commence EXACTEMENT à `debut` et la dernière finit exactement
+    à `fin` : un trim vers l'extérieur rend le temps que le montage du rush avait coupé (c'est sa main).
+    À l'intérieur du clip, les coupes du montage du rush s'appliquent."""
     kp = garde(root, bloc["rush"])
     d, f = bloc["debut"], bloc["fin"]
     if kp is None:
@@ -258,10 +274,16 @@ def plages(root, bloc):
         s, e = max(a, d), min(b, f)
         if e - s > 1e-6:
             out.append((s, e))
+    if not out:
+        return [(d, f)]
+    out[0] = (d, out[0][1])
+    out[-1] = (out[-1][0], f)
     return out
 
 
 def couper(root, seq, i, t):
+    """Coupe le clip i en deux à t (ramené hors d'un mot). Sans perte : si t tombe dans un trou coupé par
+    le montage du rush, A1 finit où finit la plage gardée d'avant et A2 commence où commence celle d'après."""
     if not 0 <= i < len(seq):
         raise ErreurProjet("coupe hors du bloc")
     b = seq[i]
@@ -269,11 +291,104 @@ def couper(root, seq, i, t):
     t = caler(float(t), ms)
     g = _mots_entre(ms, b["debut"], t)
     d = _mots_entre(ms, t, b["fin"])
-    if not g or not d or not b["debut"] < t < b["fin"]:
+    if not b["debut"] < t < b["fin"] or (ms and (not g or not d)):
         raise ErreurProjet("coupe hors du bloc")
-    a = {"rush": b["rush"], "debut": b["debut"], "fin": t}
-    c = {"rush": b["rush"], "debut": t, "fin": b["fin"]}
+    fin_a, debut_c = t, t
+    kp = garde(root, b["rush"])
+    if kp is not None and not any(a - 1e-9 <= t <= z + 1e-9 for a, z in kp):
+        avant = [z for a, z in kp if z <= t and z > b["debut"]]
+        apres = [a for a, z in kp if a >= t and a < b["fin"]]
+        if not avant or not apres:
+            raise ErreurProjet("coupe hors du bloc")
+        fin_a, debut_c = max(avant), min(apres)
+    a = {"rush": b["rush"], "debut": b["debut"], "fin": fin_a}
+    c = {"rush": b["rush"], "debut": debut_c, "fin": b["fin"]}
     return list(seq[:i]) + [a, c] + list(seq[i + 1 :])
+
+
+def _indice(seq, i, msg):
+    if isinstance(i, bool) or not isinstance(i, int) or not 0 <= i < len(seq):
+        raise ErreurProjet(msg)
+    return i
+
+
+def deplacer(seq, i, j):
+    """Le clip i passe à la position j (indice final)."""
+    _indice(seq, i, "déplacement hors de la piste")
+    _indice(seq, j, "déplacement hors de la piste")
+    out = list(seq)
+    out.insert(j, out.pop(i))
+    return out
+
+
+def retirer(seq, i):
+    _indice(seq, i, "retrait hors de la piste")
+    return list(seq[:i]) + list(seq[i + 1 :])
+
+
+def pas_image(root, stem):
+    """Durée d'une image de la source du rush (0,01 s pour un audio, 1/30 si la sonde échoue)."""
+    try:
+        info = rush(root, stem)
+        if info["kind"] == "audio":
+            return 0.01
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
+             "-of", "default=nw=1:nk=1", info["source"]],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        n, _, d = r.partition("/")
+        fps = float(n) / float(d or 1)
+        return 1 / fps if fps > 0 else 1 / 30
+    except (subprocess.CalledProcessError, ValueError, ZeroDivisionError, OSError, ErreurProjet):
+        return 1 / 30
+
+
+def trimmer(root, seq, i, cote, t):
+    """Déplace un bord du clip i à t : posé tel quel (jamais ramené hors d'un mot), arrondi à l'image,
+    borné à la source du rush, un clip garde au moins une image."""
+    if cote not in ("debut", "fin"):
+        raise ErreurProjet("trim : côté inconnu")
+    _indice(seq, i, "trim hors de la piste")
+    try:
+        t = float(t)
+    except (TypeError, ValueError):
+        raise ErreurProjet("trim : temps invalide") from None
+    if t != t or t in (float("inf"), float("-inf")):
+        raise ErreurProjet("trim : temps invalide")
+    b = seq[i]
+    pas = pas_image(root, b["rush"])
+    D = duree_source(root, b["rush"])
+    t = round(round(t / pas) * pas, 4)
+    if cote == "debut":
+        t = max(0.0, min(t, b["fin"] - pas))
+    else:
+        t = max(b["debut"] + pas, t if D is None else min(t, D))
+    out = list(seq)
+    out[i] = dict(b, **{cote: round(t, 6)})
+    return out
+
+
+def operer(root, nom, op):
+    """Une opération de piste sous verrou : couper, deplacer, retirer, trimmer. Renvoie le projet."""
+    if not isinstance(op, dict):
+        raise ErreurProjet("opération invalide")
+    with verrou(root, nom):
+        p = charger(root, nom)
+        seq, nom_op = p["sequence"], op.get("op")
+        if nom_op == "couper":
+            nouveau_seq = couper(root, seq, op.get("i"), op.get("t"))
+        elif nom_op == "deplacer":
+            nouveau_seq = deplacer(seq, op.get("i"), op.get("j"))
+        elif nom_op == "retirer":
+            nouveau_seq = retirer(seq, op.get("i"))
+        elif nom_op == "trimmer":
+            nouveau_seq = trimmer(root, seq, op.get("i"), op.get("cote"), op.get("t"))
+        else:
+            raise ErreurProjet(f"opération inconnue : {nom_op}")
+        p["sequence"] = valider(root, p, nouveau_seq)
+        ecrire(root, nom, p)
+        return p
 
 
 def inserer(seq, apres, bloc):
@@ -284,7 +399,7 @@ def valider(root, p, sequence):
     """Renvoie la séquence aux bornes calées, ou lève ErreurProjet."""
     if not isinstance(sequence, list):
         raise ErreurProjet("séquence invalide")
-    out = []
+    out, sources = [], {}
     for b in sequence:
         try:
             r, d, f = b["rush"], float(b["debut"]), float(b["fin"])
@@ -292,8 +407,13 @@ def valider(root, p, sequence):
             raise ErreurProjet("bloc invalide dans la séquence") from None
         if r not in p.get("rushs", []):
             raise ErreurProjet(f"rush absent du projet : {r}")
-        ms = mots(root, r)
-        d, f = caler(d, ms), caler(f, ms)
+        # une borne posée à la main reste telle quelle (révision piste) : seulement bornée à la source
+        if r not in sources:
+            sources[r] = duree_source(root, r)
+        d = max(0.0, d)
+        if sources[r] is not None:
+            f = min(f, sources[r])
+        d, f = round(d, 4), round(f, 4)
         if not d < f:
             raise ErreurProjet(
                 f"bloc invalide : début {d:.2f} s après la fin {f:.2f} s"
@@ -676,6 +796,24 @@ def plan_rendu(root, p):
     return runs, vides
 
 
+def hors_montage_voulu(root, bloc):
+    """Intervalles entre un bord du clip et le bord gardé le plus proche (tout le clip si aucune plage gardée
+    ne le touche) : ce temps hors du montage du rush est là parce qu'elle a tiré le bord, c'est sa main."""
+    kp = garde(root, bloc["rush"])
+    if kp is None:
+        return []
+    d, f = bloc["debut"], bloc["fin"]
+    inter = [(max(a, d), min(b, f)) for a, b in kp if min(b, f) - max(a, d) > 1e-6]
+    if not inter:
+        return [(d, f)]
+    out = []
+    if d < inter[0][0] - 1e-9:
+        out.append((d, inter[0][0]))
+    if inter[-1][1] < f - 1e-9:
+        out.append((inter[-1][1], f))
+    return out
+
+
 def _moins(a, z, coupes):
     """[a, z] privé des intervalles `coupes` : la liste des morceaux restants."""
     out, cur = [], a
@@ -701,9 +839,11 @@ def garde_projet(root, p, runs):
     err = []
     for k, r in enumerate(runs):
         ms, sil, kp = mots(root, r["rush"]), _silences(root, r["rush"]), garde(root, r["rush"])
+        voulu = [iv for i in r.get("blocs", []) for iv in hors_montage_voulu(root, p["sequence"][i])]
         for a, z in r["plages"]:
             if kp is not None:
-                for x, y in _moins(a, z, kp):
+                morceaux = [m for x, y in _moins(a, z, kp) for m in _moins(x, y, voulu)]
+                for x, y in morceaux:
                     if y - x < 1e-3:
                         continue
                     dans_silence = any(sa - 1e-3 <= x and y <= sb + 1e-3 for sa, sb in sil)
@@ -1012,6 +1152,12 @@ def main(argv):
                 print(x)
         elif cmd == "resume":
             print(json.dumps(resume(root, nom)))
+        elif cmd == "op":
+            try:
+                op = json.loads(rest[0])
+            except (IndexError, ValueError):
+                raise ErreurProjet("op : un objet JSON est attendu") from None
+            print(json.dumps(operer(root, nom, op)["sequence"]))
         elif cmd == "montrer":
             for b in charger(root, nom)["sequence"]:
                 print(f"{b['rush']}\t{b['debut']}\t{b['fin']}\t{_texte(root, b)}")

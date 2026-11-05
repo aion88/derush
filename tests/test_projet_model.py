@@ -234,13 +234,14 @@ class TestSequence(Base):
         with self.assertRaises(ErreurProjet):
             projet.valider(self.root, p, [{"rush": "zzz", "debut": 0, "fin": 1}])
 
-    def test_valider_cale_les_bornes(self):
+    def test_valider_ne_cale_plus_les_bornes(self):
+        # révision piste : une borne posée à la main dans un mot reste telle quelle
         p = {"rushs": ["prise un"]}
         ms = projet.mots(self.root, "prise un")
         out = projet.valider(
             self.root, p, [{"rush": "prise un", "debut": ms[0]["s"] + 0.01, "fin": 5}]
         )
-        self.assertEqual(out[0]["debut"], ms[0]["s"])
+        self.assertEqual(out[0]["debut"], round(ms[0]["s"] + 0.01, 3))
 
     def test_libres(self):
         p = nouveau_blocs(self.root, "demo", ["prise un", "P2"])
@@ -391,6 +392,164 @@ class Piste(Base):
         projet.nouveau(self.root, "demo", [])
         q = projet.ajouter(self.root, "demo", "P2")
         self.assertEqual([b["rush"] for b in q["sequence"]], ["P2"])
+
+
+class Trim(Base):
+    """Révision piste : plages() jusqu'aux bords du clip, coupe sans perte, déplacer, retirer, trimmer."""
+
+    def setUp(self):
+        super().setUp()
+        pat = mock.patch.object(projet, "duree_source", lambda root, stem: 60.0)
+        pat.start()
+        self.addCleanup(pat.stop)
+        # trois paragraphes de deux mots, trous coupés par le montage du rush (2.0-2.9 et 4.0-4.9)
+        mots = [("a", 1.0, 1.4), ("b", 1.5, 1.9), ("c", 3.0, 3.4), ("d", 3.5, 3.9), ("e", 5.0, 5.4), ("f", 5.5, 5.9)]
+        ecrire_rush(self.root, "K", mots, keep=[(0.9, 2.0), (2.9, 4.0), (4.9, 6.0)])
+        self.clip = {"rush": "K", "debut": 0.9, "fin": 6.0}
+
+    def duree(self, b):
+        return sum(z - a for a, z in projet.plages(self.root, b))
+
+    def test_plages_bords_du_clip(self):
+        r = self.root
+        self.assertEqual(projet.plages(r, self.clip), [(0.9, 2.0), (2.9, 4.0), (4.9, 6.0)])
+        # vers l'extérieur : le temps coupé par le montage du rush revient jusqu'au bord
+        self.assertAlmostEqual(self.duree({"rush": "K", "debut": 2.5, "fin": 4.0}), 1.5)
+        self.assertEqual(projet.plages(r, {"rush": "K", "debut": 2.5, "fin": 4.0}), [(2.5, 4.0)])
+        self.assertEqual(projet.plages(r, {"rush": "K", "debut": 2.9, "fin": 4.5}), [(2.9, 4.5)])
+        self.assertEqual(projet.plages(r, {"rush": "K", "debut": 0.5, "fin": 2.0}), [(0.5, 2.0)])
+        # une coupe intérieure reste coupée
+        self.assertEqual(
+            projet.plages(r, {"rush": "K", "debut": 1.0, "fin": 5.2}),
+            [(1.0, 2.0), (2.9, 4.0), (4.9, 5.2)],
+        )
+        # un clip tout entier dans un trou coupé : c'est elle qui l'a voulu
+        self.assertEqual(projet.plages(r, {"rush": "K", "debut": 2.1, "fin": 2.8}), [(2.1, 2.8)])
+        # sans keep.json : inchangé
+        ecrire_rush(r, "N", [("a", 1.0, 1.4)])
+        self.assertEqual(projet.plages(r, {"rush": "N", "debut": 1.5, "fin": 4}), [(1.5, 4)])
+
+    def test_plages_trim_allonge_de_ce_qu_il_deplace(self):
+        base = self.duree({"rush": "K", "debut": 2.9, "fin": 4.0})
+        for debut in (2.9, 2.8, 2.5):
+            d = self.duree({"rush": "K", "debut": debut, "fin": 4.0})
+            self.assertAlmostEqual(d - base, 2.9 - debut, places=6)
+        base = self.duree({"rush": "K", "debut": 2.9, "fin": 4.0})
+        d = self.duree({"rush": "K", "debut": 2.9, "fin": 4.3})
+        self.assertAlmostEqual(d - base, 0.3, places=6)
+
+    def test_couper_dans_un_trou_coupe_sans_perte(self):
+        seq = projet.couper(self.root, [self.clip], 0, 2.5)
+        self.assertEqual((seq[0]["fin"], seq[1]["debut"]), (2.0, 2.9))
+        self.assertAlmostEqual(
+            sum(self.duree(b) for b in seq), self.duree(self.clip), places=6
+        )
+
+    def test_couper_dans_une_plage_reste_contigu(self):
+        seq = projet.couper(self.root, [self.clip], 0, 3.45)
+        self.assertEqual((seq[0]["fin"], seq[1]["debut"]), (3.45, 3.45))
+        self.assertAlmostEqual(
+            sum(self.duree(b) for b in seq), self.duree(self.clip), places=6
+        )
+
+    def test_couper_refuse_sans_plage_gardee_d_un_cote(self):
+        for clip, t in (({"rush": "K", "debut": 2.5, "fin": 6.0}, 2.6), ({"rush": "K", "debut": 0.9, "fin": 4.5}, 4.2)):
+            with self.assertRaises(ErreurProjet) as c:
+                projet.couper(self.root, [clip], 0, t)
+            self.assertIn("coupe hors du bloc", str(c.exception))
+
+    def test_blocs_avec_keep_json_non_contigus(self):
+        mots = [("a", 1.0, 1.4), ("b", 1.5, 1.9), ("c.", 2.0, 2.4), ("d", 3.5, 3.9), ("e", 4.0, 4.4), ("f", 4.5, 4.9)]
+        ecrire_rush(self.root, "G", mots, keep=[(0.9, 2.5), (3.4, 5.0)])
+        b = projet.blocs(self.root, "G")
+        self.assertEqual((b[0]["fin"], b[1]["debut"]), (2.5, 3.4))
+        # sans keep.json : le milieu du trou, comme avant
+        ecrire_rush(self.root, "H0", mots)
+        b = projet.blocs(self.root, "H0")
+        self.assertAlmostEqual(b[0]["fin"], 2.95)
+        self.assertEqual(b[0]["fin"], b[1]["debut"])
+
+    def test_deplacer_retirer(self):
+        s = [{"rush": "K", "debut": i, "fin": i + 1} for i in range(4)]
+        copie = [dict(b) for b in s]
+        self.assertEqual([b["debut"] for b in projet.deplacer(s, 0, 3)], [1, 2, 3, 0])
+        self.assertEqual([b["debut"] for b in projet.deplacer(s, 3, 0)], [3, 0, 1, 2])
+        self.assertEqual(projet.deplacer(s, 2, 2), s)
+        for i, j in ((4, 0), (0, 4), (-1, 0), (0, -1)):
+            with self.assertRaises(ErreurProjet):
+                projet.deplacer(s, i, j)
+        self.assertEqual([b["debut"] for b in projet.retirer(s, 1)], [0, 2, 3])
+        self.assertEqual([b["debut"] for b in projet.retirer(s, 3)], [0, 1, 2])
+        self.assertEqual(projet.retirer(s[:1], 0), [])
+        with self.assertRaises(ErreurProjet):
+            projet.retirer(s, 4)
+        self.assertEqual(s, copie)
+
+    def test_trimmer(self):
+        pas = 1 / 30
+        s = [self.clip]
+        t = projet.trimmer(self.root, s, 0, "debut", 1.0)
+        self.assertAlmostEqual(t[0]["debut"] - 0.9, 0.1, delta=pas)
+        self.assertEqual(s[0]["debut"], 0.9)  # l'entrée n'est pas modifiée
+        self.assertEqual(t[0]["rush"], "K")
+        # vers l'extérieur, bornes de la source
+        self.assertEqual(projet.trimmer(self.root, s, 0, "fin", 99)[0]["fin"], 60.0)
+        self.assertEqual(projet.trimmer(self.root, s, 0, "debut", -3)[0]["debut"], 0.0)
+        # un clip garde au moins une image
+        r = projet.trimmer(self.root, s, 0, "fin", 0.0)[0]
+        self.assertGreaterEqual(r["fin"] - r["debut"], pas - 1e-6)
+        # une borne posée dans un mot n'est pas calée
+        dans_un_mot = projet.trimmer(self.root, s, 0, "debut", 1.2)[0]["debut"]
+        self.assertAlmostEqual(dans_un_mot, 1.2, delta=pas / 2 + 1e-6)
+        # sur la grille d'images
+        self.assertAlmostEqual(dans_un_mot / pas, round(dans_un_mot / pas), places=2)
+        with self.assertRaises(ErreurProjet):
+            projet.trimmer(self.root, s, 0, "milieu", 1.0)
+        with self.assertRaises(ErreurProjet):
+            projet.trimmer(self.root, s, 3, "debut", 1.0)
+
+    def test_enregistrer_sequence_garde_la_borne_dans_un_mot(self):
+        projet.nouveau(self.root, "demo", ["K"])
+        p = projet.enregistrer_sequence(self.root, "demo", [{"rush": "K", "debut": 1.2, "fin": 5.3}])
+        self.assertEqual((p["sequence"][0]["debut"], p["sequence"][0]["fin"]), (1.2, 5.3))
+
+    def test_operer_de_bout_en_bout(self):
+        projet.nouveau(self.root, "demo", ["K", "P2"])
+        p = projet.operer(self.root, "demo", {"op": "couper", "i": 0, "t": 2.5})
+        self.assertEqual([b["rush"] for b in p["sequence"]], ["K", "K", "P2"])
+        p = projet.operer(self.root, "demo", {"op": "deplacer", "i": 2, "j": 1})
+        self.assertEqual([b["rush"] for b in p["sequence"]], ["K", "P2", "K"])
+        p = projet.operer(self.root, "demo", {"op": "trimmer", "i": 1, "cote": "fin", "t": 5.0})
+        self.assertEqual(p["sequence"][1]["fin"], 5.0)
+        p = projet.operer(self.root, "demo", {"op": "retirer", "i": 1})
+        self.assertEqual([b["rush"] for b in p["sequence"]], ["K", "K"])
+        self.assertEqual(projet.charger(self.root, "demo"), p)
+        for op in ({"op": "zzz"}, {"op": "retirer"}, {"op": "retirer", "i": "x"}, [], "x"):
+            with self.assertRaises(ErreurProjet):
+                projet.operer(self.root, "demo", op)
+        self.assertEqual(projet.charger(self.root, "demo"), p)
+
+    def test_operer_en_parallele(self):
+        import threading
+
+        projet.nouveau(self.root, "demo", ["K", "P2"])
+        fautes = []
+
+        def go(op):
+            try:
+                projet.operer(self.root, "demo", op)
+            except Exception as e:  # noqa: BLE001
+                fautes.append(e)
+
+        ts = [
+            threading.Thread(target=go, args=({"op": "couper", "i": 0, "t": 2.5},)),
+            threading.Thread(target=go, args=({"op": "trimmer", "i": 1, "cote": "fin", "t": 50.0},)),
+        ]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        self.assertEqual(fautes, [])
+        seq = projet.charger(self.root, "demo")["sequence"]
+        self.assertEqual(len(seq), 3)  # la coupe est là, et le trim aussi (sur l'un des deux clips)
 
 
 class Placement(Base):
@@ -640,22 +799,28 @@ class Rendu(Base):
         self.assertEqual(len(runs), 1)
         self.assertEqual(len(runs[0]["plages"]), 1)
 
-    def test_plan_bloc_vide(self):
+    def test_plan_bloc_dans_un_trou_n_est_plus_vide(self):
+        # révision piste : un clip tout entier dans un temps coupé par le rush se joue (c'est elle qui l'a posé)
         b = projet.blocs(self.root, "prise un")
         ecrire_rush(self.root, "Q", self.m1, keep=[(0, b[0]["fin"]), (b[1]["fin"], 100)])
         qb = projet.blocs(self.root, "Q")
         p = {"nom": "d", "rushs": ["Q"], "sequence": qb, "propositions": []}
         runs, vides = projet.plan_rendu(self.root, p)
-        self.assertEqual(vides, [1])
-        self.assertEqual(runs[0]["blocs"], [0, 2])
-        self.assertEqual(len(runs[0]["plages"]), 2)
+        self.assertEqual(vides, [])
+        self.assertEqual(runs[0]["blocs"], [0, 1, 2])
 
     def fond(self, keep, silences):
         ecrire_rush(self.root, "M", self.m, keep=keep, silences=silences)
         mb = projet.blocs(self.root, "M")
         pb = projet.blocs(self.root, "P2")
-        p = self.seq(mb[0], pb[0])
+        p = self.seq(dict(mb[0], fin=min(mb[0]["fin"], keep[-1][1])), pb[0])
         return p, projet.plan_rendu(self.root, p)[0]
+
+    # La marge de fondu (code gardé derrière FONDU_ACTIF) ne s'étend plus que dans un clip : les bords de
+    # plage sont ceux du clip, donc on teste la fonction elle-même, bornes de clip explicites.
+    def marge(self, keep, silences):
+        ecrire_rush(self.root, "M", self.m, keep=keep, silences=silences)
+        return projet.mots(self.root, "M"), projet._silences(self.root, "M")
 
     def test_marge_fondu_par_le_silence(self):
         # ici « quatre » est à 0.5 s de « trois » : le silence voisin laisse la place
@@ -663,36 +828,26 @@ class Rendu(Base):
                               ("sept", 1.5), ("huit", 0.1), ("neuf.", 0.1)])
         self.le = self.m[2][2]
         E = self.le + 0.05
-        p, runs = self.fond([(0, E)], [(E, E + 1.0)])
-        self.assertAlmostEqual(runs[0]["plages"][-1][1], self.le + 0.2, places=3)
-        self.assertEqual(projet.mots_dans_fondu(self.root, runs), [])
-        self.assertEqual(projet.garde_projet(self.root, p, runs), [])
+        ms, sil = self.marge([(0, E)], [(E, E + 1.0)])
+        self.assertAlmostEqual(projet._marge_fin(ms, sil, E, E + 5), self.le + 0.2, places=3)
 
     def test_marge_fondu_pas_sur_un_mot(self):
         E = self.le + 0.05
         quatre = self.m[3][1]
-        p, runs = self.fond([(0, E)], [(E, E + 0.1)])
-        self.assertLessEqual(runs[0]["plages"][-1][1], quatre + 1e-6)
-        self.assertAlmostEqual(runs[0]["plages"][-1][1], quatre, places=3)
-        self.assertTrue(any("trois" in x for x in projet.mots_dans_fondu(self.root, runs)))
-        self.assertEqual(projet.garde_projet(self.root, p, runs), [])
+        ms, sil = self.marge([(0, E)], [(E, E + 0.1)])
+        self.assertAlmostEqual(projet._marge_fin(ms, sil, E, E + 5), quatre, places=3)
 
     def test_marge_pas_hors_silence(self):
         E = self.le + 0.05
-        _, runs = self.fond([(0, E)], [])
-        self.assertAlmostEqual(runs[0]["plages"][-1][1], E, places=3)
+        ms, sil = self.marge([(0, E)], [])
+        self.assertAlmostEqual(projet._marge_fin(ms, sil, E, E + 5), E, places=3)
 
     def test_marge_au_debut_du_run_suivant(self):
-        # raccord M -> P2 -> M : le début de la 2e prise M est déjà dans un silence trop court
         ms = projet.mots(self.root, "prise un")
         S = ms[3]["s"] - 0.05  # « on » de la 2e phrase, 0.05 s après le bord du keep
         ecrire_rush(self.root, "prise un", self.m1, keep=[(S, 100)], silences=[(S - 1.0, S)])
-        a = projet.blocs(self.root, "prise un")
-        pb = projet.blocs(self.root, "P2")
-        p = self.seq(pb[0], {"rush": "prise un", "debut": S - 0.5, "fin": a[1]["fin"]})
-        runs, _ = projet.plan_rendu(self.root, p)
-        self.assertAlmostEqual(runs[1]["plages"][0][0], ms[3]["s"] - 0.2, places=3)
-        self.assertEqual(projet.garde_projet(self.root, p, runs), [])
+        sil = projet._silences(self.root, "prise un")
+        self.assertAlmostEqual(projet._marge_debut(ms, sil, S, S - 0.5), ms[3]["s"] - 0.2, places=3)
 
     def test_garde_rouge_borne_dans_un_mot(self):
         ms = projet.mots(self.root, "prise un")
@@ -722,12 +877,21 @@ class Rendu(Base):
         self.assertTrue(any("dans un mot" in e for e in err), err)
 
     def test_garde_rouge_plage_hors_keep(self):
-        # une plage forcée hors de keep.json et hors silence : refusée
-        ecrire_rush(self.root, "K", self.m1, keep=[(0, 2.0)])
-        runs = [{"rush": "K", "source": "x", "kind": "video", "plages": [[1.0, 2.5]], "blocs": [0]}]
-        p = {"nom": "d", "rushs": ["K"], "sequence": [{"rush": "K", "debut": 1.0, "fin": 2.5}], "propositions": []}
+        # un trou DANS le clip (plage jouée à travers une coupe du rush) : refusé, plages bâties à la main
+        ecrire_rush(self.root, "K", self.m1, keep=[(0, 2.0), (3.0, 6.0)])
+        runs = [{"rush": "K", "source": "x", "kind": "video", "plages": [[1.0, 5.0]], "blocs": [0]}]
+        p = {"nom": "d", "rushs": ["K"], "sequence": [{"rush": "K", "debut": 1.0, "fin": 5.0}], "propositions": []}
         err = projet.garde_projet(self.root, p, runs)
         self.assertTrue(any("hors du montage" in e for e in err), err)
+
+    def test_garde_accepte_le_bord_tire_hors_du_montage(self):
+        # trim vers l'extérieur : le temps entre le bord du clip et le bord gardé le plus proche est sa main
+        ecrire_rush(self.root, "K", self.m1, keep=[(0, 2.0), (3.0, 6.0)])
+        for d, f in ((1.0, 2.5), (1.0, 6.4), (0.0, 2.0), (2.2, 2.6)):
+            p = {"nom": "d", "rushs": ["K"], "sequence": [{"rush": "K", "debut": d, "fin": f}], "propositions": []}
+            runs, _ = projet.plan_rendu(self.root, p)
+            err = [e for e in projet.garde_projet(self.root, p, runs) if "hors du montage" in e]
+            self.assertEqual(err, [], (d, f))
 
     def test_run_trop_court(self):
         a = projet.blocs(self.root, "prise un")

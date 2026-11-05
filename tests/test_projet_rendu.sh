@@ -71,13 +71,13 @@ out="$("$D" projet render ord 2>&1)"; rc=$?
 assert_eq 0 "$rc" "project starting with the second rush renders ($out)"
 assert_eq "1080,1920,30/1" "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$O/_projets/ord/ord.derush.mp4")" "output format = first rush (X), not first bloc (Y)"
 
-# 4. bloc vide : le montage de Y exclut le bloc inséré
+# 4. le montage de Y exclut le bloc inséré : le clip se joue quand même (le temps du clip est à elle)
 cp "$O/Y/keep.json" "$T/y.keep"
 "$DERUSH_PY" -I -c '
 import json,sys; k=json.load(open(sys.argv[1])); json.dump(k[1:], open(sys.argv[1],"w"))' "$O/Y/keep.json"
 out="$("$D" projet render demo 2>&1)"; rc=$?
 assert_eq 0 "$rc" "empty bloc: render exits 0 ($out)"
-assert_contains "$(cat "$O/_projets/demo/cuts.md")" "bloc vide" "empty bloc: cuts.md says so"
+case "$(cat "$O/_projets/demo/cuts.md")" in *"bloc vide"*) ok=0;; *) ok=1;; esac; assert_eq 1 "$ok" "clip outside the rush edit still plays: no empty bloc"
 case "$out" in *Traceback*) bad=1;; *) bad=0;; esac; assert_eq 0 "$bad" "empty bloc: no traceback"
 cp "$T/y.keep" "$O/Y/keep.json"
 
