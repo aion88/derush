@@ -33,6 +33,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 FONDU = 0.2
+# Révision piste : coupes franches par défaut. Le code de fondu reste, derrière ce drapeau (aucune interface ne
+# l'allume ; DERUSH_PROJET_FONDU=1 sert aux tests qui épinglent ce code).
+FONDU_ACTIF = os.environ.get("DERUSH_PROJET_FONDU") == "1"
 NOM_RE = re.compile(r"^[\w-]+\Z")  # \Z et non $ : « demo\n » ne passe pas
 MARGE_BORD = 0.25  # avant le premier mot, après le dernier mot
 FIN_PHRASE = (".", "?", "!")
@@ -787,7 +790,7 @@ def plan_rendu(root, p):
                 r["plages"][-1][1] = z
             else:
                 r["plages"].append([a, z])
-    for k, r in enumerate(runs):
+    for k, r in enumerate(runs if FONDU_ACTIF else []):
         ms, sil = mots(root, r["rush"]), _silences(root, r["rush"])
         if k < len(runs) - 1:
             r["plages"][-1][1] = _marge_fin(ms, sil, r["plages"][-1][1], seq[r["blocs"][-1]]["fin"])
@@ -863,7 +866,7 @@ def garde_projet(root, p, runs):
                             err.append(
                                 f"borne {_fr(t)} s de {r['rush']} dans un mot : « {m['w']} »"
                             )
-        if len(runs) > 1:
+        if FONDU_ACTIF and len(runs) > 1:
             duree = sum(z - a for a, z in r["plages"])
             if duree < 2 * FONDU + 0.1 - 1e-6:
                 debut = " ".join(
@@ -879,7 +882,7 @@ def garde_projet(root, p, runs):
 def mots_dans_fondu(root, runs):
     """Mots gardés qui passent sous un fondu de 0,2 s : à écouter."""
     out = []
-    for k, r in enumerate(runs):
+    for k, r in enumerate(runs if FONDU_ACTIF else []):
         ms = mots(root, r["rush"])
         zones = []
         if k < len(runs) - 1:
@@ -906,7 +909,7 @@ def resume(root, nom):
 def _resume(p, runs, vides):
     return {
         "total": round(sum(z - a for r in runs for a, z in r["plages"]), 3),
-        "fondus": max(0, len(runs) - 1),
+        "fondus": max(0, len(runs) - 1) if FONDU_ACTIF else 0,
         "blocs": len(p.get("sequence", [])),
         "vides": len(vides),
     }
@@ -960,6 +963,8 @@ def _chaine(runs, fichiers, infos, audio, t0):
     """Graphe ffmpeg : chaque run normalisé au format du premier, puis xfade / acrossfade de 0,2 s."""
     lignes = []
     n = len(runs)
+    if not FONDU_ACTIF:
+        return _chaine_franche(n, audio, t0)
     for i in range(n):
         if not audio:
             lignes.append(
@@ -988,10 +993,32 @@ def _chaine(runs, fichiers, infos, audio, t0):
     return ";\n".join(lignes), (None if audio else f"x{n - 1}"), prec
 
 
+def _chaine_franche(n, audio, t0):
+    """Coupes franches : chaque passage normalisé au format du premier rush, puis concat."""
+    lignes = []
+    for i in range(n):
+        if not audio:
+            lignes.append(
+                f"[{i}:v]scale={t0['w']}:{t0['h']}:force_original_aspect_ratio=decrease,"
+                f"pad={t0['w']}:{t0['h']}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={t0['fps']},"
+                f"format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[v{i}]"
+            )
+        lignes.append(
+            f"[{i}:a]aresample={t0['rate']},aformat=sample_fmts=fltp:channel_layouts={t0['layout']},"
+            f"asetpts=PTS-STARTPTS[a{i}]"
+        )
+    if audio:
+        lignes.append("".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[ao]")
+        return ";\n".join(lignes), None, "ao"
+    lignes.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vo][ao]")
+    return ";\n".join(lignes), "vo", "ao"
+
+
 def duree_attendue(infos, audio):
     """Durée du montage d'après les runs RÉELLEMENT coupés (cut.sh cale chaque plage sur la grille d'images
     de sa source : la somme des plages brutes dérive de plus de 0,25 s sur un vrai rush à 100 coupes)."""
-    return sum(i["duree"] if audio else i["vduree"] for i in infos) - FONDU * (len(infos) - 1)
+    somme = sum(i["duree"] if audio else i["vduree"] for i in infos)
+    return somme - FONDU * (len(infos) - 1) if FONDU_ACTIF else somme
 
 
 def rendre(root, nom):
@@ -1029,6 +1056,10 @@ def rendre(root, nom):
             if c.returncode != 0 or not os.path.isfile(fo):
                 raise ErreurProjet(f"{r['rush']} ne se coupe pas : {(c.stderr or c.stdout).strip()[-300:]}")
         infos = [_sonde(f) for f in fichiers]
+        json.dump(  # mesure par passage, relue par les tests de synchro A/V (écrasée à chaque rendu)
+            [{"rush": r["rush"], "duree": i["duree"], "vduree": i["vduree"]} for r, i in zip(runs, infos)],
+            open(os.path.join(work, "runs.json"), "w"),
+        )
         # le format de sortie est celui du PREMIER RUSH du projet (spec), pas du premier bloc de la séquence
         premier = p["rushs"][0] if p.get("rushs") else None
         t0 = infos[next((k for k, r in enumerate(runs) if r["rush"] == premier), 0)]
@@ -1091,8 +1122,11 @@ def _cuts_md(root, nom, p, runs, vides, infos, audio, res, t0):
             f"{_fr(sum(z - a for a, z in r['plages']))} s"
         )
     nb = sum(1 for i in range(len(seq)) if i not in vides)
-    L += ["", f"{max(0, nb - 1)} raccords, {res['fondus']} fondus de 0,2 s (vidéo et son) entre rushs différents ;",
-          "même rush : coupe franche.", ""]
+    if FONDU_ACTIF:
+        L += ["", f"{max(0, nb - 1)} raccords, {res['fondus']} fondus de 0,2 s (vidéo et son) entre rushs différents ;",
+              "même rush : coupe franche.", ""]
+    else:
+        L += ["", f"{max(0, nb - 1)} raccords, tous en coupes franches.", ""]
     if vides:
         L += [f"{len(vides)} bloc(s) vide(s) ignoré(s) (voir la liste des blocs).", ""]
     if not audio:
@@ -1103,11 +1137,14 @@ def _cuts_md(root, nom, p, runs, vides, infos, audio, res, t0):
                     f"{t0['w']}x{t0['h']} {_fps_txt(t0['fps'])} i/s (son {inf['rate']} Hz vers {t0['rate']} Hz)"
                 )
         L.append("")
-    L += ["## Mots dans un fondu, à écouter", ""]
-    mf = mots_dans_fondu(root, runs)
-    L += [f"- {x}" for x in mf] if mf else ["aucun"]
-    if not audio:
-        L += ["", "Timeline : coupes franches, les fondus ne sont que dans le .mp4"]
+    if FONDU_ACTIF:
+        L += ["## Mots dans un fondu, à écouter", ""]
+        mf = mots_dans_fondu(root, runs)
+        L += [f"- {x}" for x in mf] if mf else ["aucun"]
+        if not audio:
+            L += ["", "Timeline : coupes franches, les fondus ne sont que dans le .mp4"]
+    elif not audio:
+        L += ["Timeline : coupes franches, comme la vidéo."]
     L.append("")
     open(os.path.join(dossier(root, nom), "cuts.md"), "w").write("\n".join(L))
 

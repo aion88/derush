@@ -36,7 +36,7 @@ pj() { "$DERUSH_PY" -I "$PJ" "$@"; }
 dur() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }
 close() { "$DERUSH_PY" -I -c "import sys;print(abs(float(sys.argv[1])-float(sys.argv[2]))<=float(sys.argv[3]))" "$1" "$2" "$3"; }
 jget() { "$DERUSH_PY" -I -c "import json,sys;print(json.loads(sys.argv[1])$2)" "$1"; }
-O="$T/out"
+O="$T/out"; export DERUSH_PROJET_FONDU=1  # ce test épingle le code de fondu
 
 # prises dites : fixtures
 printf '%s [[slnc 1400]] %s [[slnc 1400]] %s\n' "Bonjour, aujourd'hui je vous parle du montage vidéo." "Le montage prend beaucoup de temps quand on filme seul." "Merci de m'avoir écouté jusqu'au bout." > "$T/in/un.txt"

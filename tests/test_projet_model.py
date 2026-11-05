@@ -552,6 +552,40 @@ class Trim(Base):
         self.assertEqual(len(seq), 3)  # la coupe est là, et le trim aussi (sur l'un des deux clips)
 
 
+class CoupesFranches(Base):
+    """Défaut de la révision piste : pas de fondu, pas de marge, pas de refus « trop court »."""
+
+    def test_pas_de_fondu_dans_le_plan_ni_le_resume(self):
+        m = suite(1.0, [("un", 0), ("deux", 0.1), ("trois", 0.1), ("quatre", 0.5)])
+        ecrire_rush(self.root, "M", m, keep=[(0.9, 2.0)], silences=[(2.0, 3.0)])
+        court = {"rush": "P2", "debut": 2.0, "fin": 2.3}
+        p = {"nom": "d", "rushs": ["M", "P2"], "propositions": [],
+             "sequence": [{"rush": "M", "debut": 0.9, "fin": 2.0}, court]}
+        self.assertFalse(projet.FONDU_ACTIF)
+        runs, vides = projet.plan_rendu(self.root, p)
+        self.assertEqual(runs[0]["plages"], [[0.9, 2.0]])  # pas de rallonge vers le silence
+        self.assertEqual(projet.garde_projet(self.root, p, runs), [])  # un clip de 0,3 s est permis
+        self.assertEqual(projet._resume(p, runs, vides)["fondus"], 0)
+        self.assertEqual(projet.mots_dans_fondu(self.root, runs), [])
+
+    def test_duree_attendue_somme_des_passages(self):
+        infos = [{"duree": 3.0, "vduree": 2.9}, {"duree": 2.0, "vduree": 1.9}]
+        self.assertAlmostEqual(projet.duree_attendue(infos, False), 4.8)
+        self.assertAlmostEqual(projet.duree_attendue(infos, True), 5.0)
+        with mock.patch.object(projet, "FONDU_ACTIF", True):
+            self.assertAlmostEqual(projet.duree_attendue(infos, False), 4.6)
+
+    def test_chaine_concat(self):
+        runs = [{"rush": "a"}, {"rush": "b"}]
+        t0 = {"w": 1080, "h": 1920, "fps": "30/1", "rate": 48000, "layout": "stereo"}
+        g, v, a = projet._chaine(runs, ["x", "y"], [{}, {}], False, t0)
+        self.assertIn("concat=n=2:v=1:a=1", g)
+        self.assertNotIn("xfade", g)
+        g, v, a = projet._chaine(runs, ["x", "y"], [{}, {}], True, t0)
+        self.assertIn("concat=n=2:v=0:a=1", g)
+        self.assertIsNone(v)
+
+
 class Placement(Base):
     def setUp(self):
         super().setUp()
@@ -769,6 +803,10 @@ class Rendu(Base):
 
     def setUp(self):
         super().setUp()
+        # ces tests épinglent le code de fondu : le drapeau est levé ici (défaut : coupes franches)
+        pat = mock.patch.object(projet, "FONDU_ACTIF", True)
+        pat.start()
+        self.addCleanup(pat.stop)
         # M : « un deux trois » finit à L_E ; un mot « quatre » 0.15 s après (même paragraphe)
         self.m = suite(1.0, [("un", 0), ("deux", 0.1), ("trois", 0.1), ("quatre", 0.15), ("cinq", 0.1), ("six.", 0.1),
                               ("sept", 1.5), ("huit", 0.1), ("neuf.", 0.1)])

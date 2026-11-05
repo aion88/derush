@@ -9,6 +9,7 @@ export DERUSH_CONFIG="$T/none" DERUSH_OUT_ROOT="$T/out"
 D="$ROOT/bin/derush"; PJ="$ROOT/derush/projet.py"; S="$ROOT/tests/synth_rush.py"
 trap 'rm -rf "$T"' EXIT
 O="$T/out"; mkdir -p "$O"
+export DERUSH_PROJET_FONDU=1  # sections 1 à 7 : le code de fondu, gardé derrière son drapeau ; la section 4a le coupe
 dur() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }
 close() { "$DERUSH_PY" -I -c "import sys;print(abs(float(sys.argv[1])-float(sys.argv[2]))<=float(sys.argv[3]))" "$1" "$2" "$3"; }
 pj() { "$DERUSH_PY" -I "$PJ" "$@"; }
@@ -111,6 +112,46 @@ assert_eq "" "$(ffprobe -v error -select_streams v -show_entries stream=index -o
 out="$("$D" projet new mix X MA 2>&1)"; rc=$?
 assert_eq 1 "$rc" "mixed project refused"
 assert_contains "$out" "ne mélange pas" "mixed project: French message"
+
+# 4a. coupes franches (défaut) : durée = somme des passages, synchro A/V par passage, bascule de tonalité sur chaque raccord
+unset DERUSH_PROJET_FONDU
+"$DERUSH_PY" -I "$S" "$O" Z --size 1080x1920 --fps 30 --rate 48000 --paras 2 --freq 880 >/dev/null
+"$D" projet new dur X Z >/dev/null 2>&1
+"$DERUSH_PY" -I -c '
+import json, sys; sys.path.insert(0, sys.argv[1]); import projet
+root = sys.argv[2]; p = projet.charger(root, "dur")
+def para(stem, k):
+    w = projet.mots(root, stem)[3 * k : 3 * k + 3]
+    return {"rush": stem, "debut": w[0]["s"], "fin": w[-1]["e"]}
+p["sequence"] = projet.valider(root, p, [para("X", 0), para("Z", 0), para("X", 1)]); projet.ecrire(root, "dur", p)' "$ROOT/derush" "$O"
+out="$("$D" projet render dur 2>&1)"; rc=$?
+assert_eq 0 "$rc" "hard cuts: render exits 0 ($out)"
+CD="$(cat "$O/_projets/dur/cuts.md")"
+assert_contains "$CD" "coupes franches" "hard cuts: cuts.md says so"
+case "$(echo "$CD" | tr 'A-Z' 'a-z')" in *fondu*) ok=0;; *) ok=1;; esac; assert_eq 1 "$ok" "hard cuts: cuts.md has no fade line"
+RUNS="$O/_projets/dur/_work/runs.json"
+[ -s "$RUNS" ] && ok=1 || ok=0; assert_eq 1 "$ok" "hard cuts: runs.json written"
+FR="$(printf '%s' 0.0334)"
+assert_eq True "$("$DERUSH_PY" -I -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+print(len(r) == 3 and all(abs(x["duree"] - x["vduree"]) <= float(sys.argv[2]) for x in r))' "$RUNS" "$FR")" "hard cuts: per-run |duree - vduree| within one frame ($(cat "$RUNS"))"
+MD="$O/_projets/dur/dur.derush.mp4"
+SUMV="$("$DERUSH_PY" -I -c 'import json,sys;print(sum(x["vduree"] for x in json.load(open(sys.argv[1]))))' "$RUNS")"
+assert_eq True "$(close "$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "$MD")" "$SUMV" 0.0334)" "hard cuts: video duration = sum of the runs, no overlap"
+assert_eq True "$(close "$(ffprobe -v error -select_streams a:0 -show_entries stream=duration -of csv=p=0 "$MD")" "$(ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "$MD")" 0.0334)" "hard cuts: audio and video lengths agree within one frame"
+SW="$("$DERUSH_PY" -I "$ROOT/tests/tone_runs.py" "$MD" 440,880)"
+assert_eq 2 "$(echo "$SW" | wc -l | tr -d ' ')" "hard cuts: two tone switches (440 880 440)"
+B1="$("$DERUSH_PY" -I -c 'import json,sys;print(json.load(open(sys.argv[1]))[0]["vduree"])' "$RUNS")"
+B2="$("$DERUSH_PY" -I -c 'import json,sys;r=json.load(open(sys.argv[1]));print(r[0]["vduree"]+r[1]["vduree"])' "$RUNS")"
+for k in 1 2; do
+  B=$([ $k = 1 ] && echo "$B1" || echo "$B2")
+  FIN="$(echo "$SW" | sed -n ${k}p | cut -d' ' -f1)"; DEB="$(echo "$SW" | sed -n ${k}p | cut -d' ' -f2)"
+  assert_eq True "$(close "$FIN" "$B" 0.0434)" "hard cuts: previous tone ends at run boundary $k ($FIN vs $B)"
+  assert_eq True "$(close "$DEB" "$B" 0.0434)" "hard cuts: next tone starts at run boundary $k ($DEB vs $B)"
+done
+assert_contains "$(cat "$O/_projets/dur/dur.fcpxml")" "Z.mp4" "hard cuts: fcpxml timeline cites each source"
+export DERUSH_PROJET_FONDU=1
 
 # 8. CLI
 "$D" projet frob demo >/dev/null 2>&1; assert_eq 1 $? "unknown projet sub-command exits 1"
