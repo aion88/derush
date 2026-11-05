@@ -89,7 +89,7 @@
 const $ = s => document.querySelector(s);
 const NOM = new URLSearchParams(location.search).get("p") || "";
 const Q = "?p=" + encodeURIComponent(NOM);
-let DATA = null, SEL = null, HEAD = 0, EDGE = "fin", WID = [];
+let DATA = null, SEL = null, HEAD = 0, EDGE = "fin", WID = [], PXS = 1, DRAG = null, NOCLICK = false;
 const v = $("#v");
 $("#title").textContent = "projet : " + NOM;
 const say = (m, bad) => { const s = $("#status"); s.textContent = m || ""; s.className = bad ? "err" : ""; };
@@ -157,6 +157,31 @@ function positionGlobale(traj, t) { // temps global -> {k, src}, null à la fin 
   return null;
 }
 function globalDe(traj, k, src) { const s = traj[k]; return s.debut + Math.min(s.z - s.a, Math.max(0, src - s.a)); }
+function ouMettre(widths, i, x) { // où va le clip i lâché à x : indice final = clips voisins dont le centre est avant x
+  let cum = 0, j = 0;
+  widths.forEach((w, k) => { if (k !== i && cum + w / 2 < x) j++; cum += w; });
+  return j;
+}
+function xInsertion(widths, i, j) { // position du trait d'insertion sur la piste (le clip glissé y reste en place)
+  const n = j <= i ? j : j + 1;
+  return widths.slice(0, n).reduce((a, b) => a + b, 0);
+}
+function bordDepuisGlisse(clip, cote, dpx, pxs, pas) { // un bord tiré de dpx pixels : temps source, à l'image (le serveur borne)
+  const t = clip[cote] + dpx / Math.max(pxs, 1e-6);
+  return Math.round(Math.round(t / pas) * pas * 10000) / 10000;
+}
+function touche(key, mods, ctx) { // touche -> action, null si rien à faire (frappe dans un champ, raccourci du navigateur…)
+  if (ctx.typing || mods.ctrl || mods.meta || mods.alt) return null;
+  if (key === "c" || key === "C") return "couper";
+  if (key === " ") return "lire";
+  if (!ctx.hasSel) return null;
+  if (key === "Delete" || key === "Backspace") return "retirer";
+  if (key === ",") return "bord-1";
+  if (key === ".") return "bord+1";
+  if (key === "ArrowLeft") return "prec";
+  if (key === "ArrowRight") return "suiv";
+  return null;
+}
 function suivant(traj, k) { return k + 1 < traj.length ? k + 1 : null; }
 // </helpers>
 async function api(path, body) {
@@ -177,7 +202,7 @@ function draw() { // piste : un bloc par clip, largeur ∝ durée
   const cs = clips();
   const dispo = Math.max(300, $("#scroll").clientWidth - 2);
   const L = largeurs(cs, dispo, 40);
-  WID = L.widths;
+  WID = L.widths; PXS = L.pxs;
   P.style.width = Math.max(dispo, WID.reduce((a, b) => a + b, 0)) + "px";
   cs.forEach((c, i) => {
     const d = el("div", "clip" + (i === SEL ? " sel" : "")); d.style.width = WID[i] + "px"; d.dataset.i = i;
@@ -233,11 +258,58 @@ $("#bEdgeL").onclick = () => { EDGE = "debut"; draw(); };
 
 // la tête de lecture : un clic sur la piste la pose et charge le bon proxy
 $("#piste").addEventListener("click", e => {
-  const c = e.target.closest(".clip"); if (!c) return;
+  const c = e.target.closest(".clip"); if (!c || NOCLICK || e.target.classList.contains("edge")) return;
   const r = $("#piste").getBoundingClientRect();
   SEL = +c.dataset.i;
   HEAD = tempsDepuisX(clips(), WID, e.clientX - r.left);
   draw(); aller(HEAD);
+});
+// glisser un clip (ordre) ou un bord (trim) : événements du pointeur, le serveur applique, la page suit sa réponse
+const piste = $("#piste");
+const xLocal = e => e.clientX - piste.getBoundingClientRect().left;
+piste.addEventListener("pointerdown", e => {
+  const c = e.target.closest(".clip"); if (!c) return;
+  const edge = e.target.classList.contains("edge") ? (e.target.classList.contains("l") ? "debut" : "fin") : null;
+  DRAG = { i: +c.dataset.i, edge, x0: e.clientX, moved: false, w0: WID[+c.dataset.i], node: c };
+  piste.setPointerCapture(e.pointerId);
+});
+piste.addEventListener("pointermove", e => {
+  if (!DRAG) return;
+  const dx = e.clientX - DRAG.x0;
+  if (!DRAG.moved && Math.abs(dx) < 4) return;
+  DRAG.moved = true;
+  if (DRAG.edge) { DRAG.node.style.width = Math.max(12, DRAG.edge === "fin" ? DRAG.w0 + dx : DRAG.w0 - dx) + "px"; return; }
+  const j = ouMettre(WID, DRAG.i, xLocal(e));
+  DRAG.node.classList.add("ghost");
+  $("#ins").style.display = "block"; $("#ins").style.left = (xInsertion(WID, DRAG.i, j) - 2) + "px";
+});
+piste.addEventListener("pointerup", e => {
+  if (!DRAG) return;
+  const d = DRAG; DRAG = null; $("#ins").style.display = "none";
+  if (!d.moved) { if (d.edge) { SEL = d.i; EDGE = d.edge; draw(); } return; }
+  NOCLICK = true; setTimeout(() => { NOCLICK = false; }, 0);
+  if (d.edge) {
+    const c = clips()[d.i];
+    SEL = d.i; EDGE = d.edge;
+    op({ op: "trimmer", i: d.i, cote: d.edge, t: bordDepuisGlisse(c, d.edge, e.clientX - d.x0, PXS, pasImage(rush(c.rush))) });
+  } else {
+    const j = ouMettre(WID, d.i, xLocal(e));
+    if (j === d.i) draw(); else op({ op: "deplacer", i: d.i, j }, () => { SEL = j; });
+  }
+});
+piste.addEventListener("pointercancel", () => { DRAG = null; $("#ins").style.display = "none"; draw(); });
+document.addEventListener("keydown", e => {
+  const a = touche(e.key, { ctrl: e.ctrlKey, meta: e.metaKey, alt: e.altKey },
+    { typing: /^(INPUT|SELECT|TEXTAREA)$/.test((document.activeElement || {}).tagName || ""), hasSel: SEL != null });
+  if (!a || !DATA) return;
+  e.preventDefault();
+  if (a === "couper") couperIci();
+  else if (a === "retirer") retirerChoisi();
+  else if (a === "bord-1") bougerBord(-1);
+  else if (a === "bord+1") bougerBord(1);
+  else if (a === "prec") { SEL = Math.max(0, SEL - 1); draw(); }
+  else if (a === "suiv") { SEL = Math.min(clips().length - 1, SEL + 1); draw(); }
+  else if (a === "lire") { if (v.paused) v.play(); else v.pause(); }
 });
 async function chargerProxy(stem) {
   const r = rush(stem);

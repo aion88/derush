@@ -190,12 +190,19 @@ return JSON.stringify([
   bordApres({debut:2,fin:5},"fin",3,1/30), bordApres({debut:2,fin:5},"debut",-1,1/30),
   tr.map(s => [s.clip,s.a,s.z,s.debut]), dureeTrajet(tr), dureeTrajet([]),
   P(positionGlobale(tr,2.5)), P(positionGlobale(tr,3.5)), positionGlobale(tr,5), P(positionGlobale(tr,-1)), P(positionGlobale(tr,2)),
-  globalDe(tr,1,3.5), suivant(tr,0), suivant(tr,2)])'
+  globalDe(tr,1,3.5), suivant(tr,0), suivant(tr,2),
+  ouMettre([100,100,100],0,5), ouMettre([100,100,100],0,120), ouMettre([100,100,100],0,999), ouMettre([100,100,100],0,-10),
+  ouMettre([100,100,100],2,10), ouMettre([100,100,100],2,299), ouMettre([100,100,100],1,150), ouMettre([100,100,100],1,3),
+  xInsertion([100,50,70],1,0), xInsertion([100,50,70],1,1), xInsertion([100,50,70],1,2),
+  bordDepuisGlisse({debut:2,fin:5},"fin",100,20,1/30), bordDepuisGlisse({debut:2,fin:5},"debut",-30,20,1/30), bordDepuisGlisse({debut:2,fin:5},"fin",1,20,1/30),
+  touche("c",{},{typing:false,hasSel:false}), touche("C",{},{typing:false,hasSel:true}), touche("Delete",{},{typing:false,hasSel:true}), touche("Backspace",{},{typing:false,hasSel:false}),
+  touche(",",{},{typing:false,hasSel:true}), touche(".",{},{typing:false,hasSel:true}), touche(".",{},{typing:false,hasSel:false}), touche(" ",{},{typing:false,hasSel:false}),
+  touche("c",{},{typing:true,hasSel:true}), touche("c",{meta:true},{typing:false,hasSel:true}), touche("ArrowLeft",{},{typing:false,hasSel:true}), touche("x",{},{typing:false,hasSel:true})])'
 R="$(osascript -l JavaScript -e 'function run(a){ return new Function(a[0] + String.fromCharCode(10) + a[1])() }' "$HELP" "$CASES" 2>&1)"
-assert_eq '["En échec : x y",null,null,false,true,false,[100,100],[40,60],[40,40,40],[],0,1,1,0,-1,15,0,20,150,200,0,0.04,0.0333,5.1,1.9667,[[0,0,2,0],[0,3,4,2],[1,10,12,3]],5,0,[1,3.5],[2,10.5],null,[0,0],[1,3],2.5,1,null]' "$R" "projet.html helpers: job message, widths, playhead mapping, play path"
+assert_eq '["En échec : x y",null,null,false,true,false,[100,100],[40,60],[40,40,40],[],0,1,1,0,-1,15,0,20,150,200,0,0.04,0.0333,5.1,1.9667,[[0,0,2,0],[0,3,4,2],[1,10,12,3]],5,0,[1,3.5],[2,10.5],null,[0,0],[1,3],2.5,1,null,0,0,2,0,0,2,1,0,0,100,220,10,0.5,5.0667,"couper","couper","retirer",null,"bord-1","bord+1",null,"lire",null,null,"prec",null]' "$R" "projet.html helpers: job message, widths, playhead mapping, play path, drag targets, key map"
 PH="$(cat "$ROOT/derush/projet.html")"
 assert_contains "$PH" '"/projet/op"' "projet.html drives the track through /projet/op"
-for banned in placer ".slot" "Accepter"; do case "$PH" in *"$banned"*) bad=1;; *) bad=0;; esac; assert_eq 0 "$bad" "projet.html no longer carries « $banned »"; done
+for banned in "/projet/placer" ".slot" "Accepter"; do case "$PH" in *"$banned"*) bad=1;; *) bad=0;; esac; assert_eq 0 "$bad" "projet.html no longer carries « $banned »"; done
 
 # 3a3. l'accueil liste les projets au-dessus des rushs
 HM="$(curl -s "$U/")"
