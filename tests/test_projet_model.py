@@ -648,6 +648,24 @@ class Rendu(Base):
         self.assertEqual(len(err), 1)
         self.assertIn("dans un mot", err[0])
 
+    def mot_etire(self, silences):
+        """Un mot étiré sur une pause (1.0-3.0 s) ; keep.json le coupe à 2.0 s (comme le rush rendu)."""
+        ecrire_rush(self.root, "S", [("Il", 1.0, 3.0), ("faut", 3.1, 3.4), ("dire.", 3.5, 3.9)],
+                    keep=[(0.0, 2.0), (3.0, 4.2)], silences=silences)
+        p = {"nom": "d", "rushs": ["S"], "sequence": [{"rush": "S", "debut": 0.0, "fin": 4.2}], "propositions": []}
+        runs, _ = projet.plan_rendu(self.root, p)
+        return p, runs
+
+    def test_garde_borne_dans_mot_etire_couvert_par_silence(self):
+        # la partie coupée du mot (2.0-3.0) est du silence détecté : même règle que check_clips
+        p, runs = self.mot_etire([(2.0, 3.0)])
+        self.assertEqual(projet.garde_projet(self.root, p, runs), [])
+
+    def test_garde_borne_dans_mot_sans_silence_reste_rouge(self):
+        p, runs = self.mot_etire([])
+        err = projet.garde_projet(self.root, p, runs)
+        self.assertTrue(any("dans un mot" in e for e in err), err)
+
     def test_garde_rouge_plage_hors_keep(self):
         # une plage forcée hors de keep.json et hors silence : refusée
         ecrire_rush(self.root, "K", self.m1, keep=[(0, 2.0)])

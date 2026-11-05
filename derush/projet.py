@@ -635,12 +635,17 @@ def garde_projet(root, p, runs):
                         err.append(
                             f"plage {_fr(x)}-{_fr(y)} s de {r['rush']} hors du montage du rush"
                         )
-            for t in (a, z):
+            for t, debut_plage in ((a, True), (z, False)):
                 for m in ms:
                     if m["s"] + 0.03 < t < m["e"] - 0.03:
-                        err.append(
-                            f"borne {_fr(t)} s de {r['rush']} dans un mot : « {m['w']} »"
-                        )
+                        # Même règle que check_clips : la partie du mot du côté coupé peut être du
+                        # silence détecté (mot étiré sur une pause) ; seul le reste est une perte.
+                        x, y = (m["s"], t) if debut_plage else (t, m["e"])
+                        couvert = sum(max(0.0, min(y, sb) - max(x, sa)) for sa, sb in sil)
+                        if (y - x) - couvert > 0.03:
+                            err.append(
+                                f"borne {_fr(t)} s de {r['rush']} dans un mot : « {m['w']} »"
+                            )
         if len(runs) > 1:
             duree = sum(z - a for a, z in r["plages"])
             if duree < 2 * FONDU + 0.1 - 1e-6:
