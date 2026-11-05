@@ -89,7 +89,7 @@
 const $ = s => document.querySelector(s);
 const NOM = new URLSearchParams(location.search).get("p") || "";
 const Q = "?p=" + encodeURIComponent(NOM);
-let DATA = null, SEL = null, HEAD = 0, EDGE = "fin", WID = [], PXS = 1, DRAG = null, NOCLICK = false;
+let DATA = null, SEL = null, HEAD = 0, EDGE = "fin", WID = [], PXS = 1, DRAG = null;
 const v = $("#v");
 $("#title").textContent = "projet : " + NOM;
 const say = (m, bad) => { const s = $("#status"); s.textContent = m || ""; s.className = bad ? "err" : ""; };
@@ -264,14 +264,13 @@ $("#bEdgeR").onclick = () => { EDGE = "fin"; draw(); };
 $("#bEdgeL").onclick = () => { EDGE = "debut"; draw(); };
 
 // la tête de lecture : un clic sur la piste la pose et charge le bon proxy
-$("#piste").addEventListener("click", e => {
-  const c = e.target.closest(".clip"); if (!c || NOCLICK || e.target.classList.contains("edge")) return;
-  const r = $("#piste").getBoundingClientRect();
-  SEL = +c.dataset.i;
-  HEAD = tempsDepuisX(clips(), WID, e.clientX - r.left);
+// (dans pointerup, pas sur « click » : la capture du pointeur renvoie le clic sur la piste, pas sur le clip)
+function poserTete(i, x) {
+  SEL = i;
+  HEAD = tempsDepuisX(clips(), WID, x);
   draw();
   if (LIT) jouerDe(HEAD); else aller(HEAD);
-});
+}
 // glisser un clip (ordre) ou un bord (trim) : événements du pointeur, le serveur applique, la page suit sa réponse
 const piste = $("#piste");
 const xLocal = e => e.clientX - piste.getBoundingClientRect().left;
@@ -294,8 +293,7 @@ piste.addEventListener("pointermove", e => {
 piste.addEventListener("pointerup", e => {
   if (!DRAG) return;
   const d = DRAG; DRAG = null; $("#ins").style.display = "none";
-  if (!d.moved) { if (d.edge) { SEL = d.i; EDGE = d.edge; draw(); } return; }
-  NOCLICK = true; setTimeout(() => { NOCLICK = false; }, 0);
+  if (!d.moved) { if (d.edge) { SEL = d.i; EDGE = d.edge; draw(); } else poserTete(d.i, xLocal(e)); return; }
   if (d.edge) {
     const c = clips()[d.i];
     SEL = d.i; EDGE = d.edge;
