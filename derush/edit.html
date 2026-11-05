@@ -53,6 +53,8 @@
   <button id="strike">Barrer (Suppr)</button>
   <button id="unstrike">Rétablir (Entrée)</button>
   <button id="undo">Annuler (⌘Z)</button>
+  <button id="copy">Copier pour une autre prise (⌘C)</button>
+  <button id="paste">Coller après le mot cliqué (⌘V)</button>
   <button id="propose" class="alt">Proposer un montage serré</button>
   <button id="save" class="primary">Monter la vidéo</button>
 </header>
@@ -319,14 +321,18 @@ document.addEventListener("keydown", e => {
   else if (e.key === "z" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); undo(); }
 });
 // Copier : les mots sélectionnés vont aussi dans le presse-papiers du navigateur (localStorage), lu par l'éditeur d'une autre prise.
-document.addEventListener("copy", () => {
+function copySel() {
   const ws = W.filter(w => w.ai >= 0 && selected_().includes(w));
-  if (!ws.length) return;
+  if (!ws.length) { $("#status").textContent = "Sélectionne d'abord des mots à copier."; return; }
   localStorage.setItem("derush.collage", JSON.stringify({ rush: STEM, debut: ws[0].s, fin: ws[ws.length - 1].e,
     words: ws.map(w => ({ w: w.w, s: w.s, e: w.e, st: w.st === "kept" || w.st === "restored" ? "kept" : "struck" })) }));
-});
+  $("#status").textContent = `${ws.length} mots copiés. Ouvre l'autre prise, clique un mot, puis « Coller ».`;
+}
+document.addEventListener("copy", copySel);
+$("#copy").onclick = copySel;
 function selected_() { const sel = getSelection(); if (!sel.rangeCount || sel.isCollapsed) return []; const r = sel.getRangeAt(0); return W.filter(w => r.intersectsNode(w.el)); }
 // Coller : seulement par ⌘V, après le mot cliqué (ou après le collage cliqué).
+$("#paste").onclick = () => paste();
 function paste() {
   let c = null;
   try { c = JSON.parse(localStorage.getItem("derush.collage") || "null"); } catch (_) {}
