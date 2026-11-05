@@ -121,6 +121,11 @@ for page in projet edit home; do
   if [ -z "$js" ]; then r="no script"; else r="$(osascript -l JavaScript -e 'function run(a){ new Function(a[0]); return "ok" }' "$js" 2>&1)"; fi
   assert_eq ok "$r" "$page.html: script parses"
 done
+# 3a3. l'accueil liste les projets au-dessus des rushs
+HM="$(curl -s "$U/")"
+case "$HM" in *"Tes projets"*) a=${HM%%Tes projets*}; b=${HM%%Tes rushs*}; [ ${#a} -lt ${#b} ] && ok=1 || ok=0;; *) ok=0;; esac
+assert_eq 1 "$ok" "home: « Tes projets » comes before « Tes rushs »"
+assert_contains "$HM" "Nouveau projet" "home: new project button"
 
 # 3b. detached into its own session: a launcher that dies with its process group leaves the studio up
 "$D" stop >/dev/null 2>&1

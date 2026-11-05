@@ -22,6 +22,12 @@
   .v .s { font-size:13px; color:var(--mute); }
   .v .j { font-size:12px; color:var(--mute); font-family:ui-monospace, monospace; display:block; white-space:pre-wrap; margin-top:4px; }
   .v .err { color:var(--cut); }
+  .pj { display:flex; align-items:center; gap:14px; padding:12px 14px; background:#fff; border-radius:6px; margin-bottom:8px; border-left:3px solid var(--ink); }
+  .pj .n { font-weight:600; flex:1; word-break:break-all; }
+  .pj .s { font-size:13px; color:var(--mute); font-weight:400; }
+  #newform { display:none; background:#fff; border-radius:6px; padding:12px 14px; margin-bottom:8px; font-size:14px; }
+  #newform label { display:block; }
+  #newform .e { color:var(--cut); margin-top:6px; }
   a.b, button.b { font:inherit; font-size:14px; background:var(--ink); color:var(--paper); border:0; border-radius:4px; padding:6px 14px; text-decoration:none; cursor:pointer; }
 </style>
 </head>
@@ -38,6 +44,15 @@
     <label><input type="radio" name="lang" value="en"> anglais</label>
   </div>
   <div id="up"></div>
+  <h2>Tes projets</h2>
+  <div id="projets"></div>
+  <button class="b" id="newbtn">Nouveau projet</button>
+  <div id="newform">
+    <div><input id="pname" placeholder="nom du projet" pattern="[\w-]+"> <span class="s" style="color:var(--mute)">lettres, chiffres, - et _</span></div>
+    <div id="pchoices" style="margin:8px 0"></div>
+    <button class="b" id="pcreate">Créer</button>
+    <div class="e" id="perr"></div>
+  </div>
   <h2>Tes rushs</h2>
   <div id="list"></div>
 </main>
@@ -81,7 +96,40 @@ async function refresh() {
     $("#list").appendChild(d);
   });
 }
-refresh(); setInterval(refresh, 3000);
+
+let LAST = [];
+async function refreshProjets() {
+  const ps = await fetch("/projets").then(r => r.json()).catch(() => []);
+  const box = $("#projets");
+  box.innerHTML = ps.length ? "" : "<p style='color:var(--mute)'>Aucun projet pour l'instant.</p>";
+  ps.forEach(p => {
+    const j = p.job || {};
+    const etat = j.running ? j.label + "…" : j.error ? "montage en échec" : p.rendu ? "monté" : "à monter";
+    const d = document.createElement("div"); d.className = "pj";
+    d.innerHTML = `<div class="n"><span class="pn"></span><br><span class="s">${p.rushs} rush${p.rushs > 1 ? "s" : ""} · ${p.blocs} blocs · ${etat}</span></div><a class="b" href="/projet?p=${encodeURIComponent(p.nom)}">Ouvrir</a>`;
+    d.querySelector(".pn").textContent = p.nom;
+    box.appendChild(d);
+  });
+}
+$("#newbtn").onclick = () => {
+  const f = $("#newform"); f.style.display = f.style.display === "block" ? "none" : "block";
+  const c = $("#pchoices"); c.innerHTML = "";
+  LAST.filter(v => v.state === "prêt" || v.state === "monté").forEach(v => {
+    const l = document.createElement("label"), i = document.createElement("input");
+    i.type = "checkbox"; i.value = v.stem; l.append(i, " " + v.stem + (v.kind === "audio" ? " (audio)" : ""));
+    c.appendChild(l);
+  });
+  if (!c.children.length) c.textContent = "Aucun rush prêt : dépose une vidéo d'abord.";
+};
+$("#pcreate").onclick = async () => {
+  const nom = $("#pname").value.trim();
+  const rushs = [...document.querySelectorAll("#pchoices input:checked")].map(i => i.value);
+  const r = await fetch("/projet/new", { method: "POST", body: JSON.stringify({ nom, rushs }) }).then(r => r.json()).catch(() => ({ error: "serveur injoignable" }));
+  if (r.error) { $("#perr").textContent = r.error; return; }
+  location.href = "/projet?p=" + encodeURIComponent(nom);
+};
+async function tick() { LAST = await fetch("/videos").then(r => r.json()).catch(() => LAST); await refreshProjets(); }
+refresh(); tick(); setInterval(refresh, 3000); setInterval(tick, 3000);
 </script>
 </body>
 </html>
