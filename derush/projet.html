@@ -28,8 +28,11 @@
   span.w { border-radius:2px; padding:0 1px; }
   span.w.auto { color:var(--mute); text-decoration:line-through; }
   span.w.sel { background:var(--hl); }
-  .slot { height:10px; border-radius:4px; margin:0 0 2px; }
-  .slot.over { height:26px; background:#e8913a55; }
+  /* cible de dépôt confortable (26 px) : la taille ne change pas au survol, rien ne saute */
+  .slot { height:26px; border-radius:4px; margin:0; position:relative; }
+  .slot::before { content:""; position:absolute; left:0; right:0; top:11px; height:4px; border-radius:2px; background:transparent; }
+  .slot.over::before { background:#e8913a; }
+  .slot.over { background:#e8913a33; }
   .prop { padding:8px 12px; border-left:3px solid #e8913a; background:#fff8ef; margin:0 0 6px; font-size:14px; border-radius:4px; }
   .prop i { color:#7a5a2e; display:block; margin:2px 0 6px; }
   .prop .txt span.w { background:#f6c48a; }
@@ -53,6 +56,7 @@
     <div id="result" hidden style="margin-top:10px;font-size:13px">
       <b>Résultat monté</b> <button id="showRes" style="color:var(--ink);border-color:#999;padding:1px 8px">voir le résultat</button>
       <div style="margin-top:8px"><button id="reveal" class="primary" style="font-size:15px;padding:8px 16px">Ouvrir dans le Finder</button></div>
+      <div id="stale" hidden style="margin-top:6px;color:var(--cut)">La séquence a changé depuis ce montage : « Monter le projet » pour le refaire.</div>
       <div id="where" style="margin-top:6px;color:var(--mute);word-break:break-all"></div>
     </div>
     <div id="rushs"></div>
@@ -76,12 +80,31 @@ const v = $("#v");
 $("#title").textContent = "projet : " + NOM;
 const say = (m, bad) => { const s = $("#status"); s.textContent = m || ""; s.className = bad ? "err" : ""; };
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+// <helpers> logique pure, testée par tests/test_studio.sh (osascript)
+function msgJob(j) { // /job rend "error" en BOOLÉEN : le message est dans "tail"
+  if (!j || !j.error) return null;
+  return "En échec : " + ((j.tail || []).slice(-3).join(" ") || "voir le journal du projet");
+}
+function memeBloc(a, b) {
+  return !!a && !!b && a.rush === b.rush && Math.abs(a.debut - b.debut) < 1e-3 && Math.abs(a.fin - b.fin) < 1e-3;
+}
+function perimee(p, seq) { // la séquence a changé depuis Placer : Accepter serait refusé
+  if (p.apres < -1 || p.apres >= seq.length) return true;
+  if (p.hote == null) return !(p.apres === -1 && seq.length === 0);
+  return !memeBloc(p.apres >= 0 ? seq[p.apres] : seq[0], p.hote);
+}
+function placeProp(p, n) { // où afficher la proposition : après le bloc `apres`, ou en fin si ce bloc n'existe plus
+  return p.apres < -1 || p.apres >= n ? "fin" : p.apres;
+}
+function typeJson(j) { return typeof j.error === "string"; } // seule une chaîne est un message d'erreur de route
+// </helpers>
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : { method: "POST", body: JSON.stringify(body) });
   const j = await r.json();
-  if (j.error) throw new Error(j.error);
+  if (typeJson(j)) throw new Error(j.error);
   return j;
 }
+const job = stem => fetch("/job?v=" + encodeURIComponent(stem)).then(r => r.json()); // brut : error est un booléen
 const fmt = s => { const m = Math.floor(s / 60); return m + ":" + String(Math.round(s % 60)).padStart(2, "0"); };
 const ref = b => ({ rush: b.rush, debut: b.debut, fin: b.fin });
 
@@ -119,14 +142,19 @@ function proposition(k) {
   d.append(head, el("i", null, p.raison + (p.couper_a != null ? " Le bloc d'accueil est coupé à cet endroit." : "")));
   const t = words(p.bloc); t.onclick = () => play(p.bloc);
   const a = el("button", null, "Accepter"), r = el("button", null, "Refuser");
+  const vieille = perimee(p, DATA.sequence);
+  if (vieille) d.prepend(el("i", null, "périmée : la séquence a changé depuis Placer, refuse-la et relance Placer"));
   a.onclick = async () => { try { await api("/projet/placer" + Q, { accepter: k }); say("proposition appliquée. Les autres propositions peuvent être périmées : relance Placer"); await load(); } catch (e) { say(e.message, true); await load(); } };
   r.onclick = async () => { try { await api("/projet/placer" + Q, { refuser: k }); await load(); } catch (e) { say(e.message, true); } };
-  d.append(t, document.createElement("br"), a, " ", r);
+  d.append(t, document.createElement("br"));
+  if (!vieille) d.append(a, " ");
+  d.append(r);
   return d;
 }
 function render() {
   const S = $("#sequence"); S.innerHTML = "";
-  const ps = (i) => DATA.propositions.map((p, k) => [p, k]).filter(([p]) => p.apres === i);
+  const n = DATA.sequence.length;
+  const ps = (i) => DATA.propositions.map((p, k) => [p, k]).filter(([p]) => placeProp(p, n) === i);
   const props = i => ps(i).forEach(([p, k]) => S.append(proposition(k)));
   props(-1);
   S.append(slot(0));
@@ -148,6 +176,7 @@ function render() {
     };
     d.append(hd, t); S.append(d, slot(i + 1)); props(i);
   });
+  props("fin");
   const R = $("#rushs"); R.innerHTML = "";
   DATA.rushs.forEach(r => {
     R.append(el("h3", null, `${r.stem}${r.kind === "audio" ? " · audio" : ""}${r.rendu ? "" : " · pas encore monté"}`));
@@ -162,6 +191,8 @@ function render() {
     });
   });
   $("#result").hidden = !DATA.rendu;
+  $("#stale").hidden = !DATA.perime;
+  file.accept = DATA.kind === "audio" ? "audio/*" : "video/*";
   fillPick();
 }
 async function couper() {
@@ -183,7 +214,9 @@ async function play(b, node) {
   if (!r.proxy) {
     say("préparation de l'aperçu de " + b.rush + "…");
     await fetch("/proxy?v=" + encodeURIComponent(b.rush), { method: "POST" });
-    for (;;) { const j = await api("/job?v=" + encodeURIComponent(b.rush)); if (!j.running) break; await new Promise(z => setTimeout(z, 1500)); }
+    try {
+      for (;;) { const j = await job(b.rush); const m = msgJob(j); if (m) return say(m, true); if (!j.running) break; await new Promise(z => setTimeout(z, 1500)); }
+    } catch (e) { return say(e.message, true); }
     r.proxy = true; say("");
   }
   const src = `/proxy.${r.kind === "audio" ? "m4a" : "mp4"}?v=${encodeURIComponent(b.rush)}`;
@@ -219,7 +252,12 @@ function send(f) {
     say(`${r.stem} reçue : le derush tourne, elle rejoindra le projet toute seule`);
     for (let n = 0; n < 800; n++) {
       await new Promise(z => setTimeout(z, 3000));
-      try { await load(); if (DATA.rushs.some(q => q.stem === r.stem)) return say(`${r.stem} est dans le projet`); } catch (_) {}
+      try {
+        await load();
+        if (DATA.rushs.some(q => q.stem === r.stem)) return say(`${r.stem} est dans le projet`);
+        const m = msgJob(await job(r.stem)); // le prep ou l'ajout a échoué : on le dit au lieu d'attendre
+        if (m) return say(`${r.stem} : ${m}`, true);
+      } catch (_) {}
     }
   };
   x.onerror = () => say("envoi en échec", true);
@@ -239,8 +277,9 @@ $("#render").onclick = async () => {
     await api("/projet/render" + Q, {});
     for (;;) {
       await new Promise(z => setTimeout(z, 1500));
-      const j = await api("/job?v=" + encodeURIComponent("projet:" + NOM));
-      if (j.error) return say("En échec : " + (j.tail || []).slice(-3).join(" "), true);
+      const j = await job("projet:" + NOM);
+      const m = msgJob(j);
+      if (m) return say(m, true);
       if (!j.running) break;
       say("montage du projet… " + (j.tail || []).slice(-1));
     }

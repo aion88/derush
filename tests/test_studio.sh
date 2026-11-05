@@ -134,6 +134,19 @@ for page in projet edit home; do
   if [ -z "$js" ]; then r="no script"; else r="$(osascript -l JavaScript -e 'function run(a){ new Function(a[0]); return "ok" }' "$js" 2>&1)"; fi
   assert_eq ok "$r" "$page.html: script parses"
 done
+
+# 3a2b. projet.html : la logique pure (échec d'un job, proposition périmée, placement) se teste hors navigateur
+HELP="$("$DERUSH_PY" -I -c 'import re,sys;print(re.search(r"// <helpers>.*?// </helpers>",open(sys.argv[1]).read(),re.S).group(0))' "$ROOT/derush/projet.html")"
+CASES='const A={rush:"a",debut:1,fin:2},B={rush:"a",debut:3,fin:4}; return JSON.stringify([
+  msgJob({error:true,tail:["x","y"]}), msgJob({error:false,tail:["x"]}), msgJob({running:true}),
+  typeJson({error:true}), typeJson({error:"boum"}), typeJson({running:false}),
+  perimee({apres:5,hote:A},[A,B]), perimee({apres:0,hote:A},[A,B]), perimee({apres:1,hote:A},[A,B]),
+  perimee({apres:-1,hote:A},[A,B]), perimee({apres:-1,hote:B},[A,B]), perimee({apres:-1,hote:null},[]), perimee({apres:-1,hote:null},[A]),
+  placeProp({apres:5},2), placeProp({apres:1},2), placeProp({apres:-1},2)])'
+R="$(osascript -l JavaScript -e 'function run(a){ return new Function(a[0] + String.fromCharCode(10) + a[1])() }' "$HELP" "$CASES" 2>&1)"
+assert_eq '["En échec : x y",null,null,false,true,false,true,false,true,false,true,false,true,"fin",1,-1]' "$R" "projet.html helpers: job failure message, stale proposals, placement"
+assert_contains "$(cat "$ROOT/derush/projet.html")" ".slot { height:26px" "drop slot is a comfortable 26 px target"
+
 # 3a3. l'accueil liste les projets au-dessus des rushs
 HM="$(curl -s "$U/")"
 case "$HM" in *"Tes projets"*) a=${HM%%Tes projets*}; b=${HM%%Tes rushs*}; [ ${#a} -lt ${#b} ] && ok=1 || ok=0;; *) ok=0;; esac

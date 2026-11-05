@@ -99,12 +99,13 @@ async function refresh() {
 
 let LAST = [];
 async function refreshProjets() {
-  const ps = await fetch("/projets").then(r => r.json()).catch(() => []);
+  let ps = await fetch("/projets").then(r => r.json()).catch(() => []);
+  if (!Array.isArray(ps)) ps = [];  // une erreur du serveur n'est pas une liste
   const box = $("#projets");
   box.innerHTML = ps.length ? "" : "<p style='color:var(--mute)'>Aucun projet pour l'instant.</p>";
   ps.forEach(p => {
     const j = p.job || {};
-    const etat = j.running ? j.label + "…" : j.error ? "montage en échec" : p.rendu ? "monté" : "à monter";
+    const etat = p.illisible ? "projet illisible (projet.json abîmé)" : j.running ? j.label + "…" : j.error ? "montage en échec" : p.rendu ? "monté" : "à monter";
     const d = document.createElement("div"); d.className = "pj";
     d.innerHTML = `<div class="n"><span class="pn"></span><br><span class="s">${p.rushs} rush${p.rushs > 1 ? "s" : ""} · ${p.blocs} blocs · ${etat}</span></div><a class="b" href="/projet?p=${encodeURIComponent(p.nom)}">Ouvrir</a>`;
     d.querySelector(".pn").textContent = p.nom;
