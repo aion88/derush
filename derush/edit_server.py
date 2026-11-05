@@ -12,6 +12,8 @@ RUSHS = os.path.abspath(sys.argv[1])
 DERUSH = os.path.abspath(sys.argv[2])
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8790
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import collage  # noqa: E402  (mots collés d'une autre prise : inserts.json)
 TAG = "barré dans l'éditeur"
 JOBS = {}  # stem -> {"proc", "kind", "log"}
 STEPS = {
@@ -159,6 +161,7 @@ def data(stem):
             os.path.join(out, "retraction_cuts.json"), {"retraction_cuts": []}
         )["retraction_cuts"],
         "restore": load(os.path.join(out, "restore.json"), {"restore": []})["restore"],
+        "inserts": collage.inserts(out),
         "rendered": os.path.exists(os.path.join(out, f"{stem}.derush.{ext(stem)}")),
     }
 
@@ -198,11 +201,13 @@ def auto_cuts(w):
 
 def save(stem, body):
     out, w = paths(stem)
+    # collage : validé AVANT d'écrire quoi que ce soit (un refus ne touche à aucun fichier)
+    ins = collage.normaliser(RUSHS, body["inserts"]) if "inserts" in body else None
     bk = os.path.join(
         w, "edit-backups", datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     )
     os.makedirs(bk, exist_ok=True)
-    for f in ("retraction_cuts.json", "restore.json", "keep.json"):
+    for f in ("retraction_cuts.json", "restore.json", "keep.json", "inserts.json"):
         if os.path.exists(os.path.join(out, f)):
             shutil.copy2(os.path.join(out, f), bk)
     rc = sorted(
@@ -229,10 +234,18 @@ def save(stem, body):
         open(os.path.join(out, "restore.json"), "w"),
         indent=1,
     )
+    if ins is not None:
+        json.dump(
+            {"inserts": ins},
+            open(os.path.join(out, "inserts.json"), "w"),
+            ensure_ascii=False,
+            indent=1,
+        )
     return {
         "ok": True,
         "cuts": len(rc),
         "restore": len(body.get("restore", [])),
+        "inserts": len(collage.inserts(out)),
         "backup": bk,
     }
 
