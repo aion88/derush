@@ -112,6 +112,15 @@ mv "$R" "$T/out/fixture-away"
 assert_contains "$(curl -s "$U/projet/data?p=essai")" "rush introuvable" "rush folder gone: French error"
 assert_eq derush "$(curl -s "$U/health")" "server still answers"
 mv "$T/out/fixture-away" "$R"
+# 3a2. pages : projet.html, edit.html et home.html se chargent ; leur script au moins se parse
+PG="$(curl -s "$U/projet?p=essai")"
+assert_contains "$PG" 'id="sequence"' "projet page has the sequence"
+assert_contains "$PG" "Monter le projet" "projet page has the render button"
+for page in projet edit home; do
+  js="$("$DERUSH_PY" -I -c 'import re,sys;m=re.search(r"<script>(.*)</script>",open(sys.argv[1]).read(),re.S);print(m.group(1) if m else "")' "$ROOT/derush/$page.html")"
+  if [ -z "$js" ]; then r="no script"; else r="$(osascript -l JavaScript -e 'function run(a){ new Function(a[0]); return "ok" }' "$js" 2>&1)"; fi
+  assert_eq ok "$r" "$page.html: script parses"
+done
 
 # 3b. detached into its own session: a launcher that dies with its process group leaves the studio up
 "$D" stop >/dev/null 2>&1

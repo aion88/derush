@@ -1,1 +1,253 @@
-<!doctype html><title>projet</title><div id="sequence"></div>Monter le projet
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>derush projet</title>
+<style>
+  :root { --ink:#141414; --paper:#f4efe6; --mute:#a59f94; --cut:#c23b22; --hl:#ffe08a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.6 -apple-system, "Helvetica Neue", sans-serif; background:var(--paper); color:var(--ink); }
+  header { position:sticky; top:0; z-index:2; display:flex; gap:12px; align-items:center; padding:10px 20px; background:var(--ink); color:var(--paper); font-size:14px; }
+  header b { font-weight:600; margin-right:auto; }
+  button { font:inherit; border:1px solid var(--paper); background:none; color:var(--paper); padding:5px 12px; border-radius:3px; cursor:pointer; }
+  button.primary { background:var(--cut); border-color:var(--cut); }
+  main { display:grid; grid-template-columns:minmax(260px, 32vw) 1fr; gap:28px; padding:20px; }
+  .side { position:sticky; top:64px; align-self:start; max-height:calc(100vh - 84px); overflow:auto; }
+  video { width:100%; max-height:42vh; background:#000; border-radius:4px; }
+  video.audio { height:56px; background:#2a2823; }
+  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#7b756a; margin:18px 0 6px; }
+  .bloc { background:#fff; border-radius:6px; padding:8px 12px; margin:0 0 6px; font-size:15px; }
+  .bloc .hd { display:flex; gap:8px; align-items:center; font-size:12px; color:#7b756a; }
+  .bloc .hd .sp { flex:1; }
+  .bloc button, .prop button { color:var(--ink); border-color:#bbb; padding:0 8px; font-size:12px; }
+  .bloc.libre { cursor:grab; border-left:3px solid #8d877c; }
+  .bloc.seq { border-left:3px solid var(--ink); }
+  .bloc.playing { box-shadow:0 0 0 2px var(--hl); }
+  .grip { cursor:grab; user-select:none; }
+  .txt { cursor:pointer; }
+  span.w { border-radius:2px; padding:0 1px; }
+  span.w.auto { color:var(--mute); text-decoration:line-through; }
+  span.w.sel { background:var(--hl); }
+  .slot { height:10px; border-radius:4px; margin:0 0 2px; }
+  .slot.over { height:26px; background:#e8913a55; }
+  .prop { padding:8px 12px; border-left:3px solid #e8913a; background:#fff8ef; margin:0 0 6px; font-size:14px; border-radius:4px; }
+  .prop i { color:#7a5a2e; display:block; margin:2px 0 6px; }
+  .prop .txt span.w { background:#f6c48a; }
+  #status { font-size:13px; opacity:.85; }
+  #drop { border:2px dashed #b9b2a6; border-radius:8px; padding:14px; text-align:center; cursor:pointer; background:#fbf8f2; font-size:14px; }
+  #drop.over { border-color:var(--cut); background:#fff; }
+  .help { font-size:13px; color:#5b564e; margin-top:10px; line-height:1.5; }
+  .err { color:#ffb4a6; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" style="color:var(--paper);text-decoration:none">← accueil</a>
+  <b id="title">projet</b>
+  <span id="status"></span>
+  <button id="render" class="primary">Monter le projet</button>
+</header>
+<main>
+  <div class="side">
+    <video id="v" controls preload="auto" playsinline></video>
+    <div id="result" hidden style="margin-top:10px;font-size:13px">
+      <b>Résultat monté</b> <button id="showRes" style="color:var(--ink);border-color:#999;padding:1px 8px">voir le résultat</button>
+      <div style="margin-top:8px"><button id="reveal" class="primary" style="font-size:15px;padding:8px 16px">Ouvrir dans le Finder</button></div>
+      <div id="where" style="margin-top:6px;color:var(--mute);word-break:break-all"></div>
+    </div>
+    <div id="rushs"></div>
+    <h3>Ajouter une prise</h3>
+    <div id="drop">Dépose une autre prise ici<input type="file" id="file" accept="video/*,audio/*" hidden></div>
+    <div style="margin-top:8px"><select id="pick"></select> <button id="add" style="color:var(--ink);border-color:#999">Ajouter</button></div>
+    <div class="help">
+      Glisse un bloc gris dans la séquence, ou déplace les blocs de la séquence par leur poignée ⠿.
+      Clique un mot d'un bloc : il joue, et « couper ici » coupe le bloc avant ce mot.
+      <span style="background:#f6c48a">Orange</span> : proposition de placement, rien n'est appliqué sans « Accepter ».
+    </div>
+  </div>
+  <div id="sequence"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const NOM = new URLSearchParams(location.search).get("p") || "";
+const Q = "?p=" + encodeURIComponent(NOM);
+let DATA = null, SEL = null, PLAY = null;
+const v = $("#v");
+$("#title").textContent = "projet : " + NOM;
+const say = (m, bad) => { const s = $("#status"); s.textContent = m || ""; s.className = bad ? "err" : ""; };
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: "POST", body: JSON.stringify(body) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+const fmt = s => { const m = Math.floor(s / 60); return m + ":" + String(Math.round(s % 60)).padStart(2, "0"); };
+const ref = b => ({ rush: b.rush, debut: b.debut, fin: b.fin });
+
+function words(b) {
+  const t = el("span", "txt");
+  b.mots.forEach((m, k) => {
+    const s = el("span", "w" + (m.garde ? "" : " auto"), m.w);
+    s.dataset.k = k;
+    t.append(s, " ");
+  });
+  return t;
+}
+function slot(k) {
+  const s = el("div", "slot");
+  s.ondragover = e => { e.preventDefault(); s.classList.add("over"); };
+  s.ondragleave = () => s.classList.remove("over");
+  s.ondrop = e => { e.preventDefault(); s.classList.remove("over"); drop(k, e); };
+  return s;
+}
+async function save(seq) {
+  try { DATA = await api("/projet/save" + Q, { sequence: seq.map(ref) }); say("séquence enregistrée"); await load(); }
+  catch (e) { say(e.message, true); }
+}
+function drop(k, e) {
+  let d; try { d = JSON.parse(e.dataTransfer.getData("text/plain")); } catch (_) { return; }
+  const seq = DATA.sequence.map(ref);
+  if (d.src === "libre") seq.splice(k, 0, d.bloc);
+  else if (d.src === "seq") { const [b] = seq.splice(d.i, 1); seq.splice(d.i < k ? k - 1 : k, 0, b); }
+  save(seq);
+}
+function proposition(k) {
+  const p = DATA.propositions[k];
+  const d = el("div", "prop");
+  const head = el("b", null, `Proposition ${p.cas === "A" ? "(reprise)" : "(par le LLM)"} : ${p.bloc.rush}`);
+  d.append(head, el("i", null, p.raison + (p.couper_a != null ? " Le bloc d'accueil est coupé à cet endroit." : "")));
+  const t = words(p.bloc); t.onclick = () => play(p.bloc);
+  const a = el("button", null, "Accepter"), r = el("button", null, "Refuser");
+  a.onclick = async () => { try { await api("/projet/placer" + Q, { accepter: k }); say("proposition appliquée. Les autres propositions peuvent être périmées : relance Placer"); await load(); } catch (e) { say(e.message, true); await load(); } };
+  r.onclick = async () => { try { await api("/projet/placer" + Q, { refuser: k }); await load(); } catch (e) { say(e.message, true); } };
+  d.append(t, document.createElement("br"), a, " ", r);
+  return d;
+}
+function render() {
+  const S = $("#sequence"); S.innerHTML = "";
+  const ps = (i) => DATA.propositions.map((p, k) => [p, k]).filter(([p]) => p.apres === i);
+  const props = i => ps(i).forEach(([p, k]) => S.append(proposition(k)));
+  props(-1);
+  S.append(slot(0));
+  DATA.sequence.forEach((b, i) => {
+    const d = el("div", "bloc seq"); d.dataset.i = i;
+    const g = el("span", "grip", "⠿"); g.draggable = true;
+    g.ondragstart = e => e.dataTransfer.setData("text/plain", JSON.stringify({ src: "seq", i }));
+    const x = el("button", null, "✕"); x.title = "retirer ce bloc";
+    x.onclick = () => save(DATA.sequence.filter((_, j) => j !== i));
+    const hd = el("div", "hd"); hd.append(g, `${b.rush} · ${fmt(b.duree)}`, el("span", "sp"), x);
+    const t = words(b);
+    t.onclick = e => {
+      play(b, d);
+      const w = e.target.closest("span.w"); if (!w) return;
+      document.querySelectorAll("span.w.sel").forEach(n => n.classList.remove("sel"));
+      document.querySelectorAll(".cut").forEach(n => n.remove());
+      w.classList.add("sel"); SEL = { i, k: +w.dataset.k };
+      if (SEL.k > 0) { const c = el("button", "cut", "✂ couper ici"); c.onclick = ev => { ev.stopPropagation(); couper(); }; w.after(c); }
+    };
+    d.append(hd, t); S.append(d, slot(i + 1)); props(i);
+  });
+  const R = $("#rushs"); R.innerHTML = "";
+  DATA.rushs.forEach(r => {
+    R.append(el("h3", null, `${r.stem}${r.kind === "audio" ? " · audio" : ""}${r.rendu ? "" : " · pas encore monté"}`));
+    if (!r.libres.length) R.append(el("div", "help", "Tous ses blocs sont dans la séquence."));
+    r.libres.forEach(b => {
+      const d = el("div", "bloc libre"); d.draggable = true;
+      d.ondragstart = e => e.dataTransfer.setData("text/plain", JSON.stringify({ src: "libre", bloc: ref(b) }));
+      const p = el("button", null, "Placer"); p.onclick = () => placer(b);
+      const hd = el("div", "hd"); hd.append(fmt(b.duree), el("span", "sp"), p);
+      const t = words(b); t.onclick = () => play(b, d);
+      d.append(hd, t); R.append(d);
+    });
+  });
+  $("#result").hidden = !DATA.rendu;
+  fillPick();
+}
+async function couper() {
+  const b = DATA.sequence[SEL.i], m = b.mots, k = SEL.k;
+  const t = (m[k - 1].e + m[k].s) / 2;
+  const seq = DATA.sequence.map(ref);
+  seq.splice(SEL.i, 1, { rush: b.rush, debut: b.debut, fin: t }, { rush: b.rush, debut: t, fin: b.fin });
+  await save(seq);
+}
+async function placer(b) {
+  say("placement en cours…");
+  try { const p = await api("/projet/placer" + Q, { bloc: ref(b) }); say(p.cas === "A" ? "reprise trouvée : proposition en orange" : "proposition du LLM en orange"); await load(); }
+  catch (e) { say(e.message, true); }
+}
+async function play(b, node) {
+  const r = DATA.rushs.find(x => x.stem === b.rush);
+  document.querySelectorAll(".bloc.playing").forEach(n => n.classList.remove("playing")); if (node) node.classList.add("playing");
+  v.className = r.kind === "audio" ? "audio" : "";
+  if (!r.proxy) {
+    say("préparation de l'aperçu de " + b.rush + "…");
+    await fetch("/proxy?v=" + encodeURIComponent(b.rush), { method: "POST" });
+    for (;;) { const j = await api("/job?v=" + encodeURIComponent(b.rush)); if (!j.running) break; await new Promise(z => setTimeout(z, 1500)); }
+    r.proxy = true; say("");
+  }
+  const src = `/proxy.${r.kind === "audio" ? "m4a" : "mp4"}?v=${encodeURIComponent(b.rush)}`;
+  if (!v.src.endsWith(src)) { v.src = src; await new Promise(z => v.addEventListener("loadedmetadata", z, { once: true })); }
+  PLAY = b; v.currentTime = b.debut; v.play();
+}
+v.ontimeupdate = () => { if (PLAY && v.currentTime >= PLAY.fin) { v.pause(); PLAY = null; } };
+
+async function load() { DATA = await api("/projet/data" + Q); render(); }
+function fillPick() {
+  fetch("/videos").then(r => r.json()).then(vs => {
+    const dedans = new Set(DATA.rushs.map(r => r.stem));
+    const p = $("#pick"); p.innerHTML = "";
+    vs.filter(x => x.state !== "brut" && !dedans.has(x.stem) && x.kind === DATA.kind).forEach(x => p.append(new Option(x.stem, x.stem)));
+    $("#add").disabled = !p.options.length;
+  }).catch(() => {});
+}
+$("#add").onclick = async () => { try { await api("/projet/add" + Q, { rush: $("#pick").value }); await load(); } catch (e) { say(e.message, true); } };
+
+const drp = $("#drop"), file = $("#file");
+drp.onclick = () => file.click();
+drp.ondragover = e => { e.preventDefault(); drp.classList.add("over"); };
+drp.ondragleave = () => drp.classList.remove("over");
+drp.ondrop = e => { e.preventDefault(); drp.classList.remove("over"); if (e.dataTransfer.files[0]) send(e.dataTransfer.files[0]); };
+file.onchange = () => file.files[0] && send(file.files[0]);
+function send(f) {
+  const x = new XMLHttpRequest();
+  const stem = f.name.replace(/[^\w.-]+/g, "_").replace(/\.[^.]+$/, "");
+  say(`envoi de ${f.name}…`);
+  x.onload = async () => {
+    const r = JSON.parse(x.responseText);
+    if (r.error) return say(r.error, true);
+    say(`${r.stem} reçue : le derush tourne, elle rejoindra le projet toute seule`);
+    for (let n = 0; n < 800; n++) {
+      await new Promise(z => setTimeout(z, 3000));
+      try { await load(); if (DATA.rushs.some(q => q.stem === r.stem)) return say(`${r.stem} est dans le projet`); } catch (_) {}
+    }
+  };
+  x.onerror = () => say("envoi en échec", true);
+  x.open("POST", `/upload?name=${encodeURIComponent(f.name)}&lang=fr&projet=${encodeURIComponent(NOM)}`);
+  x.send(f);
+}
+
+async function reveal() {
+  const r = await api("/projet/reveal" + Q, {}).catch(() => ({}));
+  $("#where").textContent = r.path || "";
+}
+$("#reveal").onclick = reveal;
+$("#showRes").onclick = () => { v.className = DATA.kind === "audio" ? "audio" : ""; v.src = `/projet/result.${DATA.kind === "audio" ? "m4a" : "mp4"}${Q}&t=${Date.now()}`; PLAY = null; v.play(); };
+$("#render").onclick = async () => {
+  try {
+    say("montage du projet…");
+    await api("/projet/render" + Q, {});
+    for (;;) {
+      await new Promise(z => setTimeout(z, 1500));
+      const j = await api("/job?v=" + encodeURIComponent("projet:" + NOM));
+      if (j.error) return say("En échec : " + (j.tail || []).slice(-3).join(" "), true);
+      if (!j.running) break;
+      say("montage du projet… " + (j.tail || []).slice(-1));
+    }
+    await load(); say("projet monté"); $("#showRes").click(); reveal();
+  } catch (e) { say(e.message, true); }
+};
+load().catch(e => say(e.message, true));
+</script>
+</body>
+</html>
