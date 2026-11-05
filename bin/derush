@@ -312,10 +312,18 @@ PY
   "$DERUSH_PY" -I "$D/check_clips.py" "$W/aligned.json" "$W/keep.json" "$RC" --silence "$W/silence_cuts.json" --fillers "$W/filler_cuts.json" \
     || { log "7b GARDE ROUGE : un mot gardé serait rogné. Rien rendu."; exit 1; }
   log "7b garde verte"
-  local MP4="$OUT/$STEM.derush.$EXT"
+  local MP4="$OUT/$STEM.derush.$EXT" INS KEEPF="$W/keep.json"
+  INS=$("$DERUSH_PY" -I "$D/collage.py" count "$OUT") || exit 1
+  if [[ "$INS" -gt 0 ]]; then  # mots collés d'une autre prise (inserts.json) : voir derush/collage.py
+    "$DERUSH_PY" -I "$D/collage.py" render "$RUSHS" "$STEM" "$MP4" 2>"$W/cut.err" | tail -1 \
+      || { log "8 COLLAGE EN ECHEC : $W/cut.err"; tail -5 "$W/cut.err" >&2; exit 1; }
+    KEEPF="$W/keep_total.json"
+    log "8 collage ok : $INS insertion(s)"
+  else
   AUDIO_ONLY=$([[ "$KIND" == audio ]] && echo 1 || echo 0) "$V_/cut.sh" "$V" "$W/keep.json" "$MP4" 2>"$W/cut.err" | tail -1 \
     || { log "8 COUPE EN ECHEC : $W/cut.err"; tail -5 "$W/cut.err" >&2; exit 1; }
   log "8 coupe ok"
+  fi
   local VD AD
   if [[ "$KIND" == audio ]]; then  # pas d'image : la durée du fichier fait foi, sync A/V sans objet
     AD=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$MP4"); VD="$AD"
@@ -326,7 +334,7 @@ PY
   ffmpeg -nostdin -y -loglevel error -i "$MP4" -vn -ac 1 -ar 16000 "$W/out.wav"
   transcribe "$W/out.wav" "$W"
   "$DERUSH_PY" -I "$D/verify_diff.py" "$W/audio.json" "$W/out.json" > "$W/verify_diff.txt" || true
-  KIND="$KIND" "$DERUSH_PY" -I - "$DUR" "$VD" "$AD" "$W/keep.json" "$W/silence_cuts.json" "$W/gap_cuts.json" "$W/filler_cuts.json" "$RC" "$W/verify_diff.txt" "$OUT/cuts.md" "$STEM" <<'PY'
+  KIND="$KIND" "$DERUSH_PY" -I - "$DUR" "$VD" "$AD" "$KEEPF" "$W/silence_cuts.json" "$W/gap_cuts.json" "$W/filler_cuts.json" "$RC" "$W/verify_diff.txt" "$OUT/cuts.md" "$STEM" <<'PY'
 import json,sys,datetime,os
 dur,vd,ad=map(float,sys.argv[1:4]); keep=json.load(open(sys.argv[4]))
 ns=len(json.load(open(sys.argv[5]))["filler_cuts"]); ng=len(json.load(open(sys.argv[6]))["filler_cuts"])
@@ -346,6 +354,7 @@ lines+=["", "## Diff transcript source -> sortie (à relire : chaque delete doit
 open(sys.argv[10],"w").write("\n".join(lines)+"\n")
 print("\n".join(lines[3:6]))
 PY
+  [[ "$INS" -gt 0 ]] && "$DERUSH_PY" -I "$D/collage.py" cuts "$RUSHS" "$STEM" >> "$OUT/cuts.md"
   log "rapport : $OUT/cuts.md (relire la section diff, remplir Sujet)"
   if [[ "$KIND" == video ]]; then cmd_fcpxml; cmd_apercu; fi
 }
@@ -397,7 +406,11 @@ cmd_logos() {
 cmd_fcpxml() {
   [[ "$KIND" == audio ]] && { echo "source audio : pas de timeline vidéo" >&2; exit 1; }
   [[ -f "$OUT/keep.json" ]] || { echo "pas de keep.json pour $STEM (lancer render)" >&2; exit 1; }
-  "$DERUSH_PY" -I "$D/fcpxml.py" "$V" "$OUT/keep.json" "$OUT/$STEM.fcpxml" "$STEM"
+  if [[ "$("$DERUSH_PY" -I "$D/collage.py" count "$OUT")" -gt 0 ]]; then
+    "$DERUSH_PY" -I "$D/collage.py" fcpxml "$RUSHS" "$STEM" "$OUT/$STEM.fcpxml" "$STEM"
+  else
+    "$DERUSH_PY" -I "$D/fcpxml.py" "$V" "$OUT/keep.json" "$OUT/$STEM.fcpxml" "$STEM"
+  fi
   log "timeline : $OUT/$STEM.fcpxml (Resolve : File > Import > Timeline)"
 }
 
