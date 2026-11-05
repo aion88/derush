@@ -30,4 +30,8 @@ p2="$(HF_HUB_OFFLINE=1 DERUSH_QWEN_MODEL=does/not-exist DERUSH_OUT_ROOT="$OUT2" 
 echo "$p2" | tail -5
 assert_contains "$p2" "→ whisper" "fallback logged"
 assert_eq 0 "$rc" "prep succeeds via whisper"
+
+# 3. Projet de deux prises : le même test que run.sh, avec le vrai Qwen sur l'ordre du rendu.
+DERUSH_E2E=1 bash "$ROOT/tests/test_projet.sh" >/dev/null 2>&1; rc=$?
+assert_eq 0 "$rc" "test_projet.sh with real Qwen order check"
 summary

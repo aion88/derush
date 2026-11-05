@@ -43,6 +43,14 @@ n'en connaît pas la moitié).
 `--noise -40` (voix faible), `--min 0.3 --pad 0.08` (plus serré), `--min 0.8 --pad 0.2` (plus posé).
 Deux vidéos : lancer les `prep` à la suite en arrière-plan, lire les `words` pendant ce temps.
 
+## Projets : plusieurs prises, un seul montage
+
+Quand la vidéo tient en plusieurs prises (ou qu'un passage oublié est refait à part), chaque prise passe d'abord
+`derush prep`, puis un projet les assemble : `derush projet new <nom> [STEM…]`, `derush projet add <nom> <STEM>`,
+`derush projet render <nom>`, `derush projet export <nom>`. Sorties dans `$DERUSH_OUT_ROOT/_projets/<nom>/` :
+`<nom>.derush.mp4`, `<nom>.reel.mp4`, `<nom>.fcpxml`, `cuts.md`. L'ordre et le placement d'une reprise se font dans
+le studio (page projet, « Placer »), jamais appliqués sans clic. Fondu de 0,2 s entre deux prises.
+
 ## Ce qui est coupé, et qui décide
 
 | Couche | Signal | Qui décide |

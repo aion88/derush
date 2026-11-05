@@ -65,6 +65,10 @@ Tip: pin the tab. The studio lives at http://127.0.0.1:8790 (the port is `DERUSH
 | `derush logos <STEM>` | Optional logo cards at the moments listed in `logos.json`. Options: `--x`, `--y`, `--width`. |
 | `derush fcpxml <STEM>` | Writes the edit as a timeline for DaVinci Resolve (`render` does it too). |
 | `derush export <STEM> [--from <file>]` | `<STEM>.reel.mp4`: 1080x1920, 30 fps, -14 LUFS, ready to post. `--from` takes an edit you retouched elsewhere. |
+| `derush projet new <name> [STEM…]` | A project: several takes already through `prep`, assembled into ONE edit. The sequence starts as the blocs (paragraphs) of the first rush. Lives in `DERUSH_OUT_ROOT/_projets/<name>/`, no media is copied. |
+| `derush projet add <name> <STEM>` | Adds a rush to a project (all video or all audio, never mixed). |
+| `derush projet render <name>` | Renders the project in order: `<name>.derush.mp4` (or `.m4a`), a multi-source `<name>.fcpxml`, `cuts.md`. 0.2 s crossfade between blocs of different rushs, hard cut inside one rush. A rush with no edit yet is rendered first. |
+| `derush projet export <name>` | `<name>.reel.mp4` (or `.export.m4a`), same spec as a rush export. |
 | `derush all <video>` | `prep`, `render`, `export` in one go, with no false-start pass (fast, less clean). |
 
 ## Tight edit (optional)
@@ -167,6 +171,10 @@ Astuce : épingle l'onglet. Le studio est sur http://127.0.0.1:8790 (port `DERUS
 ### Commandes
 
 Mêmes commandes que dans le tableau Commands, plus haut (en anglais). L'essentiel : `derush studio` pour tout faire dans le navigateur, `derush prep <video>` puis `derush render <STEM>` puis `derush export <STEM>` en ligne de commande, `derush stop` pour arrêter le studio. `derush config show` affiche la configuration.
+
+### Projets (plusieurs prises)
+
+Une vidéo en plusieurs prises, ou un passage oublié refait à part : `derush projet new <nom> [STEM…]`, `derush projet add <nom> <STEM>`, puis `derush projet render <nom>` et `derush projet export <nom>`. Les sorties sont dans `DERUSH_OUT_ROOT/_projets/<nom>/` : `<nom>.derush.mp4`, `<nom>.reel.mp4`, `<nom>.fcpxml` (une source par clip, coupes franches) et `cuts.md`. Dans le studio, la page projet montre les blocs de texte : on les glisse pour changer l'ordre, on coupe un bloc à un mot, et « Placer » propose où va une prise refaite (une reprise est repérée toute seule, sinon un LLM propose ; rien n'est appliqué sans « Accepter »). Fondu de 0,2 s entre deux prises, coupe franche dans une même prise. Un projet ne mélange pas audio et vidéo.
 
 ### Montage serré (optionnel)
 
