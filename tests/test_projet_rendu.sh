@@ -172,6 +172,32 @@ assert_eq True "$(close "$(dur "$O/_projets/mc/mc.derush.mp4")" "$ATT" 0.25)" "t
 assert_eq 1 "$(jget_mc=$("$DERUSH_PY" -I "$PJ" resume "$O" mc); "$DERUSH_PY" -I -c 'import json,sys;print(json.loads(sys.argv[1])["mots_coupes"])' "$jget_mc")" "resume counts one word cut by hand"
 export DERUSH_PROJET_FONDU=1
 
+# 4c. acceptation de la révision : couper la prise 1, insérer un morceau de la prise 2 au milieu, trimmer de 3 images
+unset DERUSH_PROJET_FONDU
+op() { "$DERUSH_PY" -I "$PJ" op "$O" "$1" "$2" >/dev/null; }
+"$D" projet new unc X >/dev/null 2>&1; "$D" projet render unc >/dev/null 2>&1
+"$D" projet new cut X >/dev/null 2>&1; op cut '{"op":"couper","i":0,"t":5.2}'
+"$D" projet render cut >/dev/null 2>&1
+assert_eq 2 "$(pj montrer "$O" cut | wc -l | tr -d ' ')" "acceptance: the cut gives two clips"
+assert_eq True "$(close "$(dur "$O/_projets/cut/cut.derush.mp4")" "$(dur "$O/_projets/unc/unc.derush.mp4")" 0.0334)" "acceptance: cutting in a rush-cut gap loses nothing (cut $(dur "$O/_projets/cut/cut.derush.mp4") vs uncut $(dur "$O/_projets/unc/unc.derush.mp4"))"
+"$D" projet new acc X Z >/dev/null 2>&1
+op acc '{"op":"couper","i":0,"t":5.2}'; op acc '{"op":"deplacer","i":2,"j":1}'
+"$D" projet render acc >/dev/null 2>&1; rc=$?
+assert_eq 0 "$rc" "acceptance: render X1 Z X2"
+A="$O/_projets/acc/acc.derush.mp4"; D0="$(dur "$A")"
+assert_eq "440 880 440" "$("$DERUSH_PY" -I "$ROOT/tests/tone_runs.py" "$A" 440,880 | awk '{printf "%s%s", (NR==1?$3:""), (NR==1?" "$4:" "$4)}')" "acceptance: the order of the render is X, Z, X"
+FIN="$(pj montrer "$O" acc | sed -n 2p | cut -f3)"
+op acc "{\"op\":\"trimmer\",\"i\":1,\"cote\":\"fin\",\"t\":$("$DERUSH_PY" -I -c "print($FIN - 0.1)")}"
+"$D" projet render acc >/dev/null 2>&1; rc=$?
+assert_eq 0 "$rc" "acceptance: render after the trim"
+D1="$(dur "$A")"
+assert_eq True "$(close "$("$DERUSH_PY" -I -c "print($D0 - $D1)")" 0.1 0.0334)" "acceptance: trimming 3 frames shortens the render by 0.1 s ($D0 to $D1)"
+assert_eq "440 880 440" "$("$DERUSH_PY" -I "$ROOT/tests/tone_runs.py" "$A" 440,880 | awk '{printf "%s%s", (NR==1?$3:""), (NR==1?" "$4:" "$4)}')" "acceptance: the order is unchanged after the trim"
+CA="$(cat "$O/_projets/acc/cuts.md")"
+case "$(echo "$CA" | tr 'A-Z' 'a-z')" in *fondu*) ok=0;; *) ok=1;; esac; assert_eq 1 "$ok" "acceptance: no fade anywhere"
+assert_eq True "$(close "$D1" "$("$DERUSH_PY" -I -c 'import json,sys;print(sum(x["vduree"] for x in json.load(open(sys.argv[1]))))' "$O/_projets/acc/_work/runs.json")" 0.0334)" "acceptance: duration = sum of the runs (no overlap)"
+export DERUSH_PROJET_FONDU=1
+
 # 8. CLI
 "$D" projet frob demo >/dev/null 2>&1; assert_eq 1 $? "unknown projet sub-command exits 1"
 assert_contains "$("$D" 2>&1)" "derush prep" "no args still prints the single-rush usage"
