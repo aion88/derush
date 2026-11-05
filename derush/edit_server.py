@@ -20,6 +20,7 @@ STEPS = {
     "prep": "derush : silences, euh, transcription, alignement",
     "proxy": "version légère pour la page",
     "render": "montage final + vérification",
+    "ordre": "assemblage des prises dans l'ordre",
 }
 
 
@@ -134,6 +135,23 @@ def videos():
                 }
             )
     return sorted(vs, key=lambda v: -v["mtime"])
+
+
+def ordre_data():
+    res = []
+    for v in videos():
+        if v["state"] != "monté" or v["kind"] != "video":
+            continue
+        out, w = paths(v["stem"])
+        try:
+            a = json.load(open(os.path.join(w, "aligned.json")))
+            words = [x["word"].strip() for sg in a["segments"] for x in sg.get("words", [])]
+            dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                        os.path.join(out, f"{v['stem']}.derush.mp4")], capture_output=True, text=True).stdout or 0)
+        except (OSError, ValueError, KeyError):
+            continue
+        res.append({"stem": v["stem"], "duration": dur, "excerpt": " ".join(words[:14])})
+    return sorted(res, key=lambda r: r["stem"])
 
 
 def data(stem):
@@ -286,6 +304,12 @@ class H(BaseHTTPRequestHandler):
                     "text/html; charset=utf-8",
                     open(os.path.join(HERE, "edit.html"), "rb").read(),
                 )
+            if path == "/ordre":
+                return self._send(200, "text/html; charset=utf-8", open(os.path.join(HERE, "ordre.html"), "rb").read())
+            if path == "/ordre/data":
+                return self._json(ordre_data())
+            if path == "/ordre/final.mp4":
+                return self._video(os.path.join(RUSHS, "_ordre", "ordre.mp4"))
             if path == "/health":
                 return self._send(200, "text/plain; charset=utf-8", b"derush")
             if path == "/videos":
@@ -387,6 +411,19 @@ class H(BaseHTTPRequestHandler):
         try:
             if path == "/upload":
                 return self._upload(q)
+            if path in ("/ordre/monter", "/ordre/reveal"):
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if path == "/ordre/reveal":
+                    subprocess.run([os.environ.get("DERUSH_OPEN", "open"), "-R", os.path.join(RUSHS, "_ordre", "ordre.mp4")], capture_output=True)
+                    return self._json({})
+                stems = [safe_stem(x) for x in json.loads(raw)["stems"]]
+                clips = [os.path.join(paths(x)[0], f"{x}.derush.mp4") for x in stems]
+                missing = [c for c in clips if not os.path.exists(c)]
+                if missing:
+                    return self._json({"error": "prise pas montée : " + os.path.basename(missing[0])}, 404)
+                os.makedirs(os.path.join(RUSHS, "_ordre"), exist_ok=True)
+                start_job("_ordre", "ordre", [[sys.executable, "-I", os.path.join(HERE, "ordre.py"), os.path.join(RUSHS, "_ordre", "ordre.mp4"), *clips]])
+                return self._json(job_state("_ordre"))
             stem = safe_stem(q.get("v"))
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             if path == "/proxy":

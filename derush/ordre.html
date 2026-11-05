@@ -1,0 +1,49 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>derush · ordre des prises</title>
+<style>
+:root{--ink:#1d1b18;--paper:#f3eee5;--mute:#8a8378;--cut:#c8402f;--line:#e3ddd2}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 -apple-system,"Helvetica Neue",sans-serif}
+header{background:var(--ink);color:#fff;padding:10px 20px;display:flex;gap:14px;align-items:center}header a{color:#fff}header b{margin-right:auto}
+button{font:inherit;font-size:13px;border:1px solid #cfc8bb;background:#fff;border-radius:6px;padding:5px 12px;cursor:pointer}
+button.primary{background:var(--cut);color:#fff;border-color:var(--cut)}
+main{display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:20px;max-width:1100px;margin:0 auto}
+h2{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);margin:0 0 10px}
+.c{background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:flex-start}
+.c .t{flex:1}.c small{display:block;color:var(--mute)}.c .x{font-size:13px;margin-top:2px}
+.c.over{border-top:3px solid var(--cut)}#seq .c{cursor:grab}
+.n{font-weight:600;color:var(--cut);width:18px}
+video{width:100%;max-height:70vh;background:#000;border-radius:8px;margin-top:10px}
+#st{color:var(--mute);font-size:13px}
+</style></head><body>
+<header><a href="/">← accueil</a><b>Ordre des prises</b><span id="st"></span><button id="go" class="primary">Monter dans cet ordre</button></header>
+<main>
+<section><h2>Prises montées (clique + pour poser)</h2><div id="av"></div></section>
+<section><h2>Ordre final (glisse pour changer, ✕ pour retirer)</h2><div id="seq"></div><video id="pl" controls hidden></video></section>
+</main>
+<script>
+const $=s=>document.querySelector(s);let T=[],SEQ=JSON.parse(localStorage.getItem("derush.ordre")||"[]");
+const by=s=>T.find(t=>t.stem===s);
+function fmt(d){d=Math.round(d);return Math.floor(d/60)+":"+String(d%60).padStart(2,"0")}
+function card(t,extra){const d=document.createElement("div");d.className="c";
+ d.innerHTML=`<div class="t"><b>${t.stem}</b><small>${fmt(t.duration)}</small><div class="x">${t.excerpt}…</div></div>`;
+ const a=document.createElement("a");a.href="/edit?v="+encodeURIComponent(t.stem);a.textContent="éditer";a.style.fontSize="12px";d.append(a);return d}
+function draw(){
+ $("#av").innerHTML="";T.forEach(t=>{const d=card(t);const b=document.createElement("button");b.textContent="+";b.onclick=()=>{SEQ.push(t.stem);save();draw()};d.append(b);$("#av").append(d)});
+ $("#seq").innerHTML="";SEQ=SEQ.filter(by);let tot=0;
+ SEQ.forEach((s,i)=>{const t=by(s);tot+=t.duration;const d=card(t);d.draggable=true;d.insertAdjacentHTML("afterbegin",`<span class="n">${i+1}</span>`);
+  const x=document.createElement("button");x.textContent="✕";x.onclick=()=>{SEQ.splice(i,1);save();draw()};d.append(x);
+  d.ondragstart=e=>e.dataTransfer.setData("i",i);d.ondragover=e=>{e.preventDefault();d.classList.add("over")};d.ondragleave=()=>d.classList.remove("over");
+  d.ondrop=e=>{e.preventDefault();const a=+e.dataTransfer.getData("i");const[b]=SEQ.splice(a,1);SEQ.splice(a<i?i-1:i,0,b);save();draw()};
+  d.onclick=e=>{if(e.target.tagName==="BUTTON"||e.target.tagName==="A")return;$("#pl").hidden=false;$("#pl").src="/result.mp4?v="+encodeURIComponent(s)};
+  $("#seq").append(d)});
+ $("#st").textContent=SEQ.length?`${SEQ.length} prises · ${fmt(tot)} · coupes sèches`:"";
+}
+function save(){localStorage.setItem("derush.ordre",JSON.stringify(SEQ))}
+$("#go").onclick=async()=>{if(!SEQ.length){$("#st").textContent="Pose au moins une prise.";return}
+ await fetch("/ordre/monter?v=_ordre",{method:"POST",body:JSON.stringify({stems:SEQ})});poll()};
+async function poll(){const j=await fetch("/job?v=_ordre").then(r=>r.json());
+ if(j.running){$("#st").textContent="Montage en cours…";setTimeout(poll,2000);return}
+ if(j.error){$("#st").textContent="Échec : "+(j.tail||[]).slice(-2).join(" ");return}
+ if(j.kind==="ordre"||j.label){$("#st").textContent="Prêt.";$("#pl").hidden=false;$("#pl").src="/ordre/final.mp4?t="+Date.now();
+  $("#st").insertAdjacentHTML("beforeend",' <button onclick="fetch(\'/ordre/reveal?v=_ordre\',{method:\'POST\'})">Ouvrir dans le Finder</button>')}}
+fetch("/ordre/data").then(r=>r.json()).then(d=>{T=d;draw();poll()});
+</script></body></html>
