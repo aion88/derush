@@ -55,6 +55,14 @@ def suite(t0, textes, pas=0.3, dur=0.25):
     return out
 
 
+def nouveau_blocs(root, nom, stems):
+    """Projet à l'ancienne : la séquence part en paragraphes du premier rush (le Placer s'y exerce)."""
+    p = projet.nouveau(root, nom, stems)
+    p["sequence"] = projet.blocs(root, stems[0]) if stems else []
+    projet.ecrire(root, nom, p)
+    return p
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -235,7 +243,7 @@ class TestSequence(Base):
         self.assertEqual(out[0]["debut"], ms[0]["s"])
 
     def test_libres(self):
-        p = projet.nouveau(self.root, "demo", ["prise un", "P2"])
+        p = nouveau_blocs(self.root, "demo", ["prise un", "P2"])
         # P2 : 2 blocs ; on insère la moitié du premier
         b2 = projet.blocs(self.root, "P2")
         ms = projet.mots(self.root, "P2")
@@ -253,7 +261,7 @@ class TestProjet(Base):
     def test_nouveau_et_existant(self):
         p = projet.nouveau(self.root, "demo", ["prise un", "P2"])
         self.assertEqual(p["rushs"], ["prise un", "P2"])
-        self.assertEqual(p["sequence"], projet.blocs(self.root, "prise un"))
+        self.assertEqual([b["rush"] for b in p["sequence"]], ["prise un", "P2"])
         f = os.path.join(self.root, "_projets", "demo", "projet.json")
         avant = open(f).read()
         with self.assertRaises(ErreurProjet) as c:
@@ -325,7 +333,7 @@ class TestProjet(Base):
             text=True,
             check=True,
         ).stdout
-        self.assertEqual(len(out.strip().splitlines()), 3)
+        self.assertEqual(len(out.strip().splitlines()), 1)
         self.assertTrue(out.splitlines()[0].startswith("prise un\t"))
         k = subprocess.run(
             py + ["kind", self.root, "demo"], capture_output=True, text=True, check=True
@@ -336,6 +344,53 @@ class TestProjet(Base):
 LLM_APRES = (
     'cat >/dev/null; echo "{\\"apres\\": %s, \\"couper_a_mot\\": %s, \\"raison\\": \\"suite logique\\"}"'
 )
+
+
+class Piste(Base):
+    """Révision piste de montage : une prise = un clip, ajouter = fin de piste."""
+
+    def setUp(self):
+        super().setUp()
+        pat = mock.patch.object(projet, "duree_source", lambda root, stem: 60.0)
+        pat.start()
+        self.addCleanup(pat.stop)
+
+    def test_nouveau_un_clip_par_rush(self):
+        ecrire_rush(self.root, "K", self.m1, keep=[(0.9, 2.0), (3.0, 7.5)])
+        p = projet.nouveau(self.root, "demo", ["K", "P2"])
+        self.assertEqual(
+            p["sequence"],
+            [{"rush": "K", "debut": 0.9, "fin": 7.5}, {"rush": "P2", "debut": 0.0, "fin": 100.0}],
+        )
+
+    def test_clip_sans_keep_marges_et_bornes(self):
+        ecrire_rush(self.root, "N", [("a", 0.1, 0.4), ("b", 0.5, 59.9)])
+        c = projet.clip_rush(self.root, "N")
+        self.assertEqual((c["debut"], c["fin"]), (0.0, 60.0))
+        ecrire_rush(self.root, "M", [("a", 1.0, 1.4), ("b", 1.5, 2.0)])
+        c = projet.clip_rush(self.root, "M")
+        self.assertEqual((c["debut"], c["fin"]), (0.75, 2.25))
+
+    def test_clip_sans_mots_ni_keep(self):
+        ecrire_rush(self.root, "V", [])
+        c = projet.clip_rush(self.root, "V")
+        self.assertEqual((c["debut"], c["fin"]), (0.0, 60.0))
+
+    def test_ajouter_en_fin_et_garde_les_coupes(self):
+        projet.nouveau(self.root, "demo", ["prise un"])
+        p = projet.charger(self.root, "demo")
+        p["sequence"] = projet.couper(self.root, p["sequence"], 0, 6.0)
+        projet.ecrire(self.root, "demo", p)
+        q = projet.ajouter(self.root, "demo", "P2")
+        self.assertEqual(len(q["sequence"]), 3)
+        self.assertEqual(q["sequence"][:2], p["sequence"])
+        self.assertEqual(q["sequence"][2]["rush"], "P2")
+        self.assertEqual(projet.ajouter(self.root, "demo", "P2"), q)
+
+    def test_premier_ajout_dans_projet_vide(self):
+        projet.nouveau(self.root, "demo", [])
+        q = projet.ajouter(self.root, "demo", "P2")
+        self.assertEqual([b["rush"] for b in q["sequence"]], ["P2"])
 
 
 class Placement(Base):
@@ -358,7 +413,7 @@ class Placement(Base):
              ("merci", 1.5), ("à", 0.1), ("tous", 0.1), ("les", 0.1), ("amis.", 0.1)],
         )
         ecrire_rush(self.root, "N", n, keep=[(0.0, 100.0)])
-        self.p = projet.nouveau(self.root, "demo", ["H", "N"])
+        self.p = nouveau_blocs(self.root, "demo", ["H", "N"])
         self.seq = self.p["sequence"]
         self.nb = projet.blocs(self.root, "N")
 

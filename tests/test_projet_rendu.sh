@@ -21,13 +21,13 @@ pj() { "$DERUSH_PY" -I "$PJ" "$@"; }
 # 1. creation
 "$D" projet new demo X >/dev/null 2>&1; assert_eq 0 $? "projet new exits 0"
 "$D" projet add demo Y >/dev/null 2>&1; assert_eq 0 $? "projet add exits 0"
-assert_eq 4 "$(pj montrer "$O" demo | wc -l | tr -d ' ')" "montrer: X's 4 blocs only"
+assert_eq 2 "$(pj montrer "$O" demo | wc -l | tr -d ' ')" "montrer: one clip per rush"
 # Y inséré entre X0 et X1 (séquence écrite comme le ferait le studio)
 "$DERUSH_PY" -I -c '
 import sys; sys.path.insert(0, sys.argv[1]); import projet
 root = sys.argv[2]; p = projet.charger(root, "demo")
 y = projet.blocs(root, "Y")[0]
-p["sequence"] = projet.valider(root, p, projet.inserer(p["sequence"], 0, y)); projet.ecrire(root, "demo", p)' "$ROOT/derush" "$O"
+p["sequence"] = projet.valider(root, p, projet.inserer(projet.blocs(root, "X"), 0, y)); projet.ecrire(root, "demo", p)' "$ROOT/derush" "$O"
 assert_eq 5 "$(pj montrer "$O" demo | wc -l | tr -d ' ')" "Y bloc inserted"
 R="$(pj resume "$O" demo)"
 FOND="$("$DERUSH_PY" -I -c 'import json,sys;print(json.loads(sys.argv[1])["fondus"])' "$R")"

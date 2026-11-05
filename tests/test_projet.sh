@@ -55,8 +55,14 @@ bash "$ROOT/tests/make_fixture.sh" "$T/in" "prise trois" "$T/in/trois.txt" >/dev
 
 # projet
 "$D" projet new demo "prise un" >/dev/null 2>&1; assert_eq 0 $? "projet new"
-assert_eq 3 "$(pj montrer "$O" demo | wc -l | tr -d ' ')" "montrer: 3 blocs of prise un"
+assert_eq 1 "$(pj montrer "$O" demo | wc -l | tr -d ' ')" "montrer: one clip for prise un"
 "$D" projet add demo "prise deux" >/dev/null 2>&1; assert_eq 0 $? "projet add"
+assert_eq 2 "$(pj montrer "$O" demo | wc -l | tr -d ' ')" "montrer: add appends one clip"
+# le Placer (backend gardé) s'exerce sur une séquence en paragraphes : on la pose à la main
+"$DERUSH_PY" -I -c '
+import sys; sys.path.insert(0, sys.argv[1]); import projet
+p = projet.charger(sys.argv[2], "demo"); p["sequence"] = projet.blocs(sys.argv[2], "prise un"); projet.ecrire(sys.argv[2], "demo", p)' "$ROOT/derush" "$O"
+assert_eq 3 "$(pj montrer "$O" demo | wc -l | tr -d ' ')" "montrer: 3 paragraph blocs of prise un"
 bloc() { "$DERUSH_PY" -I -c '
 import sys; sys.path.insert(0, sys.argv[1]); import projet
 b = projet.blocs(sys.argv[2], sys.argv[3])[int(sys.argv[4])]; print(b["debut"], b["fin"])' "$ROOT/derush" "$O" "$1" "$2"; }

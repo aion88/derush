@@ -146,6 +146,36 @@ def garde(root, stem):
     return [(float(r["start"]), float(r["end"])) for r in json.load(open(k))]
 
 
+def duree_source(root, stem):
+    """Durée de la source du rush en secondes, ou None si elle ne se sonde pas."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1",
+             rush(root, stem)["source"]],
+            capture_output=True, text=True, check=True,
+        )
+        d = float(r.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError, OSError):
+        return None
+    return d if d > 0 else None
+
+
+def clip_rush(root, stem):
+    """Le clip de départ d'une prise : toute la prise gardée, du premier au dernier mot gardé."""
+    kp, ms, D = garde(root, stem), mots(root, stem), duree_source(root, stem)
+    if kp:
+        debut, fin = min(a for a, _ in kp), max(b for _, b in kp)
+    elif ms:
+        debut, fin = max(0.0, ms[0]["s"] - MARGE_BORD), ms[-1]["e"] + MARGE_BORD
+        if D is not None:
+            fin = min(fin, D)
+    elif D is not None:
+        debut, fin = 0.0, D
+    else:
+        raise ErreurProjet(f"rush sans mots ni durée lisible : {stem}")
+    return {"rush": stem, "debut": round(debut, 3), "fin": round(fin, 3)}
+
+
 def caler(t, ms):
     """Une borne tombée dans un mot est ramenée au bord le plus proche de ce mot."""
     for m in ms:
@@ -334,7 +364,7 @@ def _nouveau(root, nom, stems):
     p = {
         "nom": nom,
         "rushs": uniques,
-        "sequence": blocs(root, uniques[0]) if uniques else [],
+        "sequence": [clip_rush(root, r) for r in uniques],
         "propositions": [],
     }
     ecrire(root, nom, p)
@@ -354,8 +384,7 @@ def _ajouter(root, nom, stem):
     if p["rushs"]:
         _refuser_melange(stem, _kind(root, stem), _kind(root, p["rushs"][0]))
     p["rushs"].append(stem)
-    if len(p["rushs"]) == 1 and not p["sequence"]:
-        p["sequence"] = blocs(root, stem)
+    p["sequence"] = list(p["sequence"]) + [clip_rush(root, stem)]
     ecrire(root, nom, p)
     return p
 

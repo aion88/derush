@@ -90,7 +90,7 @@ assert_contains "$(curl -s -o /dev/null -w '%{http_code}' "$U/projet?p=essai")" 
 assert_eq 404 "$(curl -s -o /dev/null -w '%{http_code}' "$U/data?v=_projets")" "/data?v=_projets is not a rush"
 case "$(curl -s "$U/videos")" in *_projets*) bad=1;; *) bad=0;; esac; assert_eq 0 "$bad" "/videos does not list _projets"
 # placer : le projet de ce seul rush n'a pas de bloc libre, on raccourcit la séquence d'abord
-B1="$("$DERUSH_PY" -I -c 'import json,sys;print(json.dumps({"sequence":json.load(sys.stdin)["sequence"][:1]}))' <<<"$(curl -s "$U/projet/data?p=essai")")"
+B1="$("$DERUSH_PY" -I -c 'import json,sys;sys.path.insert(0,sys.argv[1]);import projet;print(json.dumps({"sequence":projet.blocs(sys.argv[2],"fixture test")[:1]}))' "$ROOT/derush" "$T/out")"
 r=$(curl -s -X POST "$U/projet/save?p=essai" -d "$B1")
 assert_contains "$r" '"sequence"' "save a shorter sequence"
 LIB="$("$DERUSH_PY" -I -c 'import json,sys;d=json.load(sys.stdin);print(json.dumps({"bloc":{k:d["rushs"][0]["libres"][0][k] for k in ("rush","debut","fin")}}))' <<<"$(curl -s "$U/projet/data?p=essai")")"
