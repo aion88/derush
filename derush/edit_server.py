@@ -286,6 +286,59 @@ def pvue(b):
     }
 
 
+def cvue(nom, b):
+    """Un clip de la piste : ses bornes, ce qu'il joue (plages), sa durée, ses premiers mots, ses bords posés
+    dans un mot, l'adresse de sa vignette."""
+    pl = projet.plages(RUSHS, b)
+    gardes = [m["w"] for m in projet.mots_du_bloc(RUSHS, b) if m["garde"]]
+    return {
+        "rush": b["rush"],
+        "debut": b["debut"],
+        "fin": b["fin"],
+        "duree": round(sum(z - a for a, z in pl), 3),
+        "plages": [[round(a, 3), round(z, 3)] for a, z in pl],
+        "texte": " ".join(gardes[:8]),
+        "mot_coupe": projet.bords_dans_mot(RUSHS, b),
+        "vignette": f"/projet/vignette?p={urllib.parse.quote(nom)}&rush={urllib.parse.quote(b['rush'])}"
+        f"&t={round((b['debut'] + b['fin']) / 2, 2)}",
+    }
+
+
+def vignette(nom, q):
+    """JPEG 160 px de large : une image du proxy du rush à t (quantisé à 0,5 s), gardée dans _work/vignettes/."""
+    p = projet.charger(RUSHS, nom)
+    stem = q.get("rush", "")
+    if stem not in p.get("rushs", []):
+        raise ErreurProjet(f"rush absent du projet : {stem}")
+    try:
+        t = float(q.get("t", ""))
+    except ValueError:
+        raise ErreurProjet("vignette : temps invalide") from None
+    if t != t or t in (float("inf"), float("-inf")):
+        raise ErreurProjet("vignette : temps invalide")
+    proxy = os.path.join(paths(stem)[1], "proxy.mp4")
+    if projet.genre(RUSHS, {"rushs": [stem]}) == "audio" or not os.path.isfile(proxy):
+        raise FileNotFoundError("pas de vignette pour ce rush")
+    D = projet.duree_source(RUSHS, stem)
+    t = round(round(max(0.0, t) * 2) / 2, 1)
+    if D is not None:
+        t = round(min(t, max(0.0, D - 0.1)), 2)  # la dernière image n'est pas toujours décodable
+    cache = os.path.join(projet.dossier(RUSHS, nom), "_work", "vignettes")
+    os.makedirs(cache, exist_ok=True)
+    f = os.path.join(cache, f"{re.sub(r'[^A-Za-z0-9._-]', '_', stem)}-{int(t * 1000)}-{int(os.path.getmtime(proxy))}.jpg")
+    if not os.path.isfile(f):
+        tmp = f + ".tmp.jpg"
+        r = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", str(t), "-i", proxy, "-frames:v", "1",
+             "-vf", "scale=160:-2", tmp],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0 or not os.path.isfile(tmp):
+            raise FileNotFoundError("vignette impossible")
+        os.replace(tmp, f)
+    return open(f, "rb").read()
+
+
 def pjob(nom):
     return job_state(f"projet:{nom}")
 
@@ -341,6 +394,9 @@ def projet_data(nom):
                 "kind": k,
                 "proxy": os.path.exists(os.path.join(paths(stem)[1], "proxy." + ("m4a" if k == "audio" else "mp4"))),
                 "rendu": projet.garde(RUSHS, stem) is not None,
+                "fps": round(1 / projet.pas_image(RUSHS, stem), 3) if k != "audio" else None,
+                "pas": round(projet.pas_image(RUSHS, stem), 6),
+                "duree": projet.duree_source(RUSHS, stem),
                 "libres": [pvue(b) for b in lib[stem]],
             }
         )
@@ -348,7 +404,7 @@ def projet_data(nom):
         "nom": nom,
         "kind": projet.genre(RUSHS, p),
         "rushs": rushs,
-        "sequence": [pvue(b) for b in p["sequence"]],
+        "sequence": [cvue(nom, b) for b in p["sequence"]],
         "propositions": [dict(x, bloc=pvue(x["bloc"])) for x in p.get("propositions", [])],
         "rendu": projet_sortie(nom) is not None,
         "perime": perime(nom),
@@ -378,6 +434,10 @@ def projet_post(path, q, raw):
     if path == "/projet/save":
         with PLOCK:
             return projet.enregistrer_sequence(RUSHS, nom, body.get("sequence")), 200
+    if path == "/projet/op":
+        with PLOCK:
+            projet.operer(RUSHS, nom, body)
+        return projet_data(nom), 200
     if path == "/projet/placer":
         if "accepter" in body:
             with PLOCK:
@@ -468,6 +528,8 @@ class H(BaseHTTPRequestHandler):
                 return self._json(projets())
             if path == "/projet/data":
                 return self._json(projet_data(pnom(q)))
+            if path == "/projet/vignette":
+                return self._send(200, "image/jpeg", vignette(pnom(q), q))
             if path in ("/projet/result.mp4", "/projet/result.m4a"):
                 f = projet_sortie(pnom(q))
                 if not f or not f.endswith(path[-3:]):
