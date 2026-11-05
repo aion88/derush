@@ -550,5 +550,139 @@ class Placement(Base):
         self.assertNotIn("Traceback", r.stderr)
 
 
+class Rendu(Base):
+    """Plan de rendu, garde, marge de fondu."""
+
+    def setUp(self):
+        super().setUp()
+        # M : « un deux trois » finit à L_E ; un mot « quatre » 0.15 s après (même paragraphe)
+        self.m = suite(1.0, [("un", 0), ("deux", 0.1), ("trois", 0.1), ("quatre", 0.15), ("cinq", 0.1), ("six.", 0.1),
+                              ("sept", 1.5), ("huit", 0.1), ("neuf.", 0.1)])
+        self.le = self.m[2][2]  # fin de « trois »
+
+    def seq(self, *blocs):
+        return {"nom": "d", "rushs": ["prise un", "P2", "M"], "sequence": list(blocs), "propositions": []}
+
+    def test_plan_runs(self):
+        a = projet.blocs(self.root, "prise un")
+        b = projet.blocs(self.root, "P2")
+        p = self.seq(a[0], a[1], b[0], a[2])
+        runs, vides = projet.plan_rendu(self.root, p)
+        self.assertEqual([r["rush"] for r in runs], ["prise un", "P2", "prise un"])
+        self.assertEqual(runs[0]["blocs"], [0, 1])
+        self.assertEqual(vides, [])
+        self.assertEqual(runs[0]["kind"], "video")
+        self.assertTrue(runs[0]["source"].endswith("prise un.mov"))
+        projet.ecrire(self.root, "d", p)
+        r = projet.resume(self.root, "d")
+        self.assertEqual((r["fondus"], r["blocs"], r["vides"]), (2, 4, 0))
+
+    def test_plan_fusion_contigue(self):
+        a = projet.blocs(self.root, "prise un")
+        ms = projet.mots(self.root, "prise un")
+        moitie = projet.couper(self.root, [a[1]], 0, (ms[5]["e"] + ms[6]["s"]) / 2)
+        runs, _ = projet.plan_rendu(self.root, self.seq(*moitie))
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(len(runs[0]["plages"]), 1)
+
+    def test_plan_bloc_vide(self):
+        b = projet.blocs(self.root, "prise un")
+        ecrire_rush(self.root, "Q", self.m1, keep=[(0, b[0]["fin"]), (b[1]["fin"], 100)])
+        qb = projet.blocs(self.root, "Q")
+        p = {"nom": "d", "rushs": ["Q"], "sequence": qb, "propositions": []}
+        runs, vides = projet.plan_rendu(self.root, p)
+        self.assertEqual(vides, [1])
+        self.assertEqual(runs[0]["blocs"], [0, 2])
+        self.assertEqual(len(runs[0]["plages"]), 2)
+
+    def fond(self, keep, silences):
+        ecrire_rush(self.root, "M", self.m, keep=keep, silences=silences)
+        mb = projet.blocs(self.root, "M")
+        pb = projet.blocs(self.root, "P2")
+        p = self.seq(mb[0], pb[0])
+        return p, projet.plan_rendu(self.root, p)[0]
+
+    def test_marge_fondu_par_le_silence(self):
+        # ici « quatre » est à 0.5 s de « trois » : le silence voisin laisse la place
+        self.m = suite(1.0, [("un", 0), ("deux", 0.1), ("trois", 0.1), ("quatre", 0.5), ("cinq", 0.1), ("six.", 0.1),
+                              ("sept", 1.5), ("huit", 0.1), ("neuf.", 0.1)])
+        self.le = self.m[2][2]
+        E = self.le + 0.05
+        p, runs = self.fond([(0, E)], [(E, E + 1.0)])
+        self.assertAlmostEqual(runs[0]["plages"][-1][1], self.le + 0.2, places=3)
+        self.assertEqual(projet.mots_dans_fondu(self.root, runs), [])
+        self.assertEqual(projet.garde_projet(self.root, p, runs), [])
+
+    def test_marge_fondu_pas_sur_un_mot(self):
+        E = self.le + 0.05
+        quatre = self.m[3][1]
+        p, runs = self.fond([(0, E)], [(E, E + 0.1)])
+        self.assertLessEqual(runs[0]["plages"][-1][1], quatre + 1e-6)
+        self.assertAlmostEqual(runs[0]["plages"][-1][1], quatre, places=3)
+        self.assertTrue(any("trois" in x for x in projet.mots_dans_fondu(self.root, runs)))
+        self.assertEqual(projet.garde_projet(self.root, p, runs), [])
+
+    def test_marge_pas_hors_silence(self):
+        E = self.le + 0.05
+        _, runs = self.fond([(0, E)], [])
+        self.assertAlmostEqual(runs[0]["plages"][-1][1], E, places=3)
+
+    def test_marge_au_debut_du_run_suivant(self):
+        # raccord M -> P2 -> M : le début de la 2e prise M est déjà dans un silence trop court
+        ms = projet.mots(self.root, "prise un")
+        S = ms[3]["s"] - 0.05  # « on » de la 2e phrase, 0.05 s après le bord du keep
+        ecrire_rush(self.root, "prise un", self.m1, keep=[(S, 100)], silences=[(S - 1.0, S)])
+        a = projet.blocs(self.root, "prise un")
+        pb = projet.blocs(self.root, "P2")
+        p = self.seq(pb[0], {"rush": "prise un", "debut": S - 0.5, "fin": a[1]["fin"]})
+        runs, _ = projet.plan_rendu(self.root, p)
+        self.assertAlmostEqual(runs[1]["plages"][0][0], ms[3]["s"] - 0.2, places=3)
+        self.assertEqual(projet.garde_projet(self.root, p, runs), [])
+
+    def test_garde_rouge_borne_dans_un_mot(self):
+        ms = projet.mots(self.root, "prise un")
+        milieu = (ms[1]["s"] + ms[1]["e"]) / 2
+        p = self.seq({"rush": "prise un", "debut": milieu, "fin": ms[2]["e"] + 0.05})
+        runs, _ = projet.plan_rendu(self.root, p)
+        err = projet.garde_projet(self.root, p, runs)
+        self.assertEqual(len(err), 1)
+        self.assertIn("dans un mot", err[0])
+
+    def test_garde_rouge_plage_hors_keep(self):
+        # une plage forcée hors de keep.json et hors silence : refusée
+        ecrire_rush(self.root, "K", self.m1, keep=[(0, 2.0)])
+        runs = [{"rush": "K", "source": "x", "kind": "video", "plages": [[1.0, 2.5]], "blocs": [0]}]
+        p = {"nom": "d", "rushs": ["K"], "sequence": [{"rush": "K", "debut": 1.0, "fin": 2.5}], "propositions": []}
+        err = projet.garde_projet(self.root, p, runs)
+        self.assertTrue(any("hors du montage" in e for e in err), err)
+
+    def test_run_trop_court(self):
+        a = projet.blocs(self.root, "prise un")
+        court = {"rush": "P2", "debut": 2.0, "fin": 2.3}
+        p = self.seq(a[0], court, a[1])
+        runs, _ = projet.plan_rendu(self.root, p)
+        err = projet.garde_projet(self.root, p, runs)
+        self.assertEqual(len(err), 1)
+        self.assertIn("bloc trop court pour un fondu", err[0])
+        self.assertIn("retire-le ou rallonge-le", err[0])
+
+    def test_resume(self):
+        a = projet.blocs(self.root, "prise un")
+        b = projet.blocs(self.root, "P2")
+        p = self.seq(a[0], b[0])
+        projet.ecrire(self.root, "d", p)
+        r = projet.resume(self.root, "d")
+        attendu = sum(e - s for bl in (a[0], b[0]) for s, e in projet.plages(self.root, bl))
+        self.assertAlmostEqual(r["total"], attendu, places=2)
+        self.assertEqual((r["fondus"], r["blocs"], r["vides"]), (1, 2, 0))
+
+    def test_rush_introuvable_au_plan(self):
+        a = projet.blocs(self.root, "P2")
+        os.remove(os.path.join(self.root, "P2", "P2.mov"))
+        with self.assertRaises(ErreurProjet) as c:
+            projet.plan_rendu(self.root, self.seq(a[0]))
+        self.assertIn("rush introuvable : P2", str(c.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

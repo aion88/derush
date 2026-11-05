@@ -10,6 +10,7 @@ Usage (root = $DERUSH_OUT_ROOT) :
   projet.py new <root> <nom> [STEM…]     crée un projet (séquence = blocs du premier rush)
   projet.py add <root> <nom> <STEM>      ajoute un rush
   projet.py kind <root> <nom>            audio ou video
+  projet.py resume <root> <nom>          durées et nombre de fondus (JSON)
   projet.py montrer <root> <nom>         une ligne par bloc : rush, début, fin, texte
   projet.py placer <root> <nom> <STEM> <début> <fin>   propose où va ce bloc (JSON), le range
   projet.py accepter|refuser <root> <nom> <k>          applique ou efface la proposition k
@@ -518,6 +519,169 @@ def refuser(root, nom, k):
     return p
 
 
+# ---------------------------------------------------------------- plan de rendu
+
+
+def _silences(root, stem):
+    f = os.path.join(_dossier_rush(root, stem), "_work", "silence_cuts.json")
+    if not os.path.isfile(f):
+        return []
+    return [
+        (float(c["start"]), float(c["end"]))
+        for c in json.load(open(f)).get("filler_cuts", [])
+    ]
+
+
+def _marge_fin(ms, sil, E, bfin):
+    """Rallonge la fin E vers le silence voisin jusqu'à FONDU après le dernier mot gardé."""
+    avant = [m for m in ms if m["s"] < E - 1e-6]
+    if not avant or avant[-1]["e"] > E + 1e-6:
+        return E  # pas de mot, ou la borne tombe dans un mot : on ne touche à rien
+    dernier = avant[-1]
+    if E - dernier["e"] >= FONDU - 1e-6:
+        return E
+    span = next((b for a, b in sil if a <= E + 1e-3 and b > E + 1e-6), None)
+    if span is None:
+        return E
+    suivants = [m["s"] for m in ms if m["s"] >= E - 1e-6]
+    borne = min([dernier["e"] + FONDU, bfin, span] + suivants[:1])
+    return max(E, borne)
+
+
+def _marge_debut(ms, sil, S, bdebut):
+    """Idem pour le début S : le fondu ne doit pas manger le premier mot gardé."""
+    apres = [m for m in ms if m["e"] > S + 1e-6]
+    if not apres or apres[0]["s"] < S - 1e-6:
+        return S
+    premier = apres[0]
+    if premier["s"] - S >= FONDU - 1e-6:
+        return S
+    span = next((a for a, b in sil if a < S - 1e-6 and b >= S - 1e-3), None)
+    if span is None:
+        return S
+    precedents = [m["e"] for m in ms if m["e"] <= S + 1e-6]
+    borne = max([premier["s"] - FONDU, bdebut, span] + precedents[-1:])
+    return min(S, borne)
+
+
+def plan_rendu(root, p):
+    """(runs, vides) : une suite de blocs d'un même rush = un run, coupé en un seul passage."""
+    seq = p.get("sequence", [])
+    runs, vides = [], []
+    for i, b in enumerate(seq):
+        pl = plages(root, b)
+        if not pl:
+            vides.append(i)
+            continue
+        if runs and runs[-1]["rush"] == b["rush"]:
+            r = runs[-1]
+        else:
+            info = rush(root, b["rush"])
+            r = {"rush": b["rush"], "source": info["source"], "kind": info["kind"],
+                 "plages": [], "blocs": []}
+            runs.append(r)
+        r["blocs"].append(i)
+        for a, z in pl:
+            if r["plages"] and abs(r["plages"][-1][1] - a) < 1e-3:
+                r["plages"][-1][1] = z
+            else:
+                r["plages"].append([a, z])
+    for k, r in enumerate(runs):
+        ms, sil = mots(root, r["rush"]), _silences(root, r["rush"])
+        if k < len(runs) - 1:
+            r["plages"][-1][1] = _marge_fin(ms, sil, r["plages"][-1][1], seq[r["blocs"][-1]]["fin"])
+        if k > 0:
+            r["plages"][0][0] = _marge_debut(ms, sil, r["plages"][0][0], seq[r["blocs"][0]]["debut"])
+    return runs, vides
+
+
+def _moins(a, z, coupes):
+    """[a, z] privé des intervalles `coupes` : la liste des morceaux restants."""
+    out, cur = [], a
+    for x, y in sorted(coupes):
+        if y <= cur:
+            continue
+        if x >= z:
+            break
+        if x > cur:
+            out.append((cur, x))
+        cur = max(cur, y)
+    if cur < z:
+        out.append((cur, z))
+    return out
+
+
+def _fr(x):
+    return f"{x:.2f}".replace(".", ",")
+
+
+def garde_projet(root, p, runs):
+    """Erreurs (liste vide = vert) : plage hors du montage du rush, borne dans un mot, run trop court."""
+    err = []
+    for k, r in enumerate(runs):
+        ms, sil, kp = mots(root, r["rush"]), _silences(root, r["rush"]), garde(root, r["rush"])
+        for a, z in r["plages"]:
+            if kp is not None:
+                for x, y in _moins(a, z, kp):
+                    if y - x < 1e-3:
+                        continue
+                    dans_silence = any(sa - 1e-3 <= x and y <= sb + 1e-3 for sa, sb in sil)
+                    sur_mot = any(m["s"] < y - 1e-3 and m["e"] > x + 1e-3 for m in ms)
+                    if not dans_silence or sur_mot:
+                        err.append(
+                            f"plage {_fr(x)}-{_fr(y)} s de {r['rush']} hors du montage du rush"
+                        )
+            for t in (a, z):
+                for m in ms:
+                    if m["s"] + 0.03 < t < m["e"] - 0.03:
+                        err.append(
+                            f"borne {_fr(t)} s de {r['rush']} dans un mot : « {m['w']} »"
+                        )
+        if len(runs) > 1:
+            duree = sum(z - a for a, z in r["plages"])
+            if duree < 2 * FONDU + 0.1 - 1e-6:
+                debut = " ".join(
+                    m["w"] for m in mots_du_bloc(root, p["sequence"][r["blocs"][0]])[:5]
+                )
+                err.append(
+                    f"bloc trop court pour un fondu ({_fr(duree)} s gardées) : « {debut} », "
+                    "retire-le ou rallonge-le"
+                )
+    return err
+
+
+def mots_dans_fondu(root, runs):
+    """Mots gardés qui passent sous un fondu de 0,2 s : à écouter."""
+    out = []
+    for k, r in enumerate(runs):
+        ms = mots(root, r["rush"])
+        zones = []
+        if k < len(runs) - 1:
+            e = r["plages"][-1][1]
+            zones.append((e - FONDU, e))
+        if k > 0:
+            s = r["plages"][0][0]
+            zones.append((s, s + FONDU))
+        for zs, ze in zones:
+            for m in ms:
+                milieu = (m["s"] + m["e"]) / 2
+                dedans = any(a <= milieu <= z for a, z in r["plages"])
+                if m["e"] > zs + 1e-6 and m["s"] < ze - 1e-6 and dedans:
+                    out.append(f"« {m['w']} » ({r['rush']}, {_fr(m['s'])} s)")
+    return out
+
+
+def resume(root, nom):
+    p = charger(root, nom)
+    runs, vides = plan_rendu(root, p)
+    return {
+        "total": round(sum(z - a for r in runs for a, z in r["plages"]), 3),
+        "fondus": max(0, len(runs) - 1),
+        "blocs": len(p.get("sequence", [])),
+        "vides": len(vides),
+    }
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -551,6 +715,8 @@ def main(argv):
             accepter(root, nom, int(rest[0]))
         elif cmd == "refuser":
             refuser(root, nom, int(rest[0]))
+        elif cmd == "resume":
+            print(json.dumps(resume(root, nom)))
         elif cmd == "montrer":
             for b in charger(root, nom)["sequence"]:
                 print(f"{b['rush']}\t{b['debut']}\t{b['fin']}\t{_texte(root, b)}")
