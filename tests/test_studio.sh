@@ -197,12 +197,23 @@ return JSON.stringify([
   bordDepuisGlisse({debut:2,fin:5},"fin",100,20,1/30), bordDepuisGlisse({debut:2,fin:5},"debut",-30,20,1/30), bordDepuisGlisse({debut:2,fin:5},"fin",1,20,1/30),
   touche("c",{},{typing:false,hasSel:false}), touche("C",{},{typing:false,hasSel:true}), touche("Delete",{},{typing:false,hasSel:true}), touche("Backspace",{},{typing:false,hasSel:false}),
   touche(",",{},{typing:false,hasSel:true}), touche(".",{},{typing:false,hasSel:true}), touche(".",{},{typing:false,hasSel:false}), touche(" ",{},{typing:false,hasSel:false}),
-  touche("c",{},{typing:true,hasSel:true}), touche("c",{meta:true},{typing:false,hasSel:true}), touche("ArrowLeft",{},{typing:false,hasSel:true}), touche("x",{},{typing:false,hasSel:true})])'
+  touche("c",{},{typing:true,hasSel:true}), touche("c",{meta:true},{typing:false,hasSel:true}), touche("ArrowLeft",{},{typing:false,hasSel:true}), touche("x",{},{typing:false,hasSel:true}),
+  etape(tr,0,1.5), etape(tr,0,1.99), etape(tr,1,3.99), etape(tr,2,11.99),
+  etape(trajet([{rush:"a",plages:[[0,2],[2,4]]}]),0,1.99)])'
 R="$(osascript -l JavaScript -e 'function run(a){ return new Function(a[0] + String.fromCharCode(10) + a[1])() }' "$HELP" "$CASES" 2>&1)"
-assert_eq '["En échec : x y",null,null,false,true,false,[100,100],[40,60],[40,40,40],[],0,1,1,0,-1,15,0,20,150,200,0,0.04,0.0333,5.1,1.9667,[[0,0,2,0],[0,3,4,2],[1,10,12,3]],5,0,[1,3.5],[2,10.5],null,[0,0],[1,3],2.5,1,null,0,0,2,0,0,2,1,0,0,100,220,10,0.5,5.0667,"couper","couper","retirer",null,"bord-1","bord+1",null,"lire",null,null,"prec",null]' "$R" "projet.html helpers: job message, widths, playhead mapping, play path, drag targets, key map"
+assert_eq '["En échec : x y",null,null,false,true,false,[100,100],[40,60],[40,40,40],[],0,1,1,0,-1,15,0,20,150,200,0,0.04,0.0333,5.1,1.9667,[[0,0,2,0],[0,3,4,2],[1,10,12,3]],5,0,[1,3.5],[2,10.5],null,[0,0],[1,3],2.5,1,null,0,0,2,0,0,2,1,0,0,100,220,10,0.5,5.0667,"couper","couper","retirer",null,"bord-1","bord+1",null,"lire",null,null,"prec",null,null,{"k":1,"rush":"a","change":false,"seek":3},{"k":2,"rush":"b","change":true,"seek":10},{"stop":true},{"k":1,"rush":"a","change":false,"seek":null}]' "$R" "projet.html helpers: job message, widths, playhead mapping, play path, drag targets, key map"
 PH="$(cat "$ROOT/derush/projet.html")"
 assert_contains "$PH" '"/projet/op"' "projet.html drives the track through /projet/op"
 for banned in "/projet/placer" ".slot" "Accepter"; do case "$PH" in *"$banned"*) bad=1;; *) bad=0;; esac; assert_eq 0 "$bad" "projet.html no longer carries « $banned »"; done
+
+# 3a2c. fumée de la page sous node (DOM de façade) : chargement, largeurs, ✂ à la tête, bord d'une image, retirer
+if command -v node >/dev/null 2>&1; then
+  SM='{"nom":"x","kind":"video","rushs":[{"stem":"A","kind":"video","proxy":true,"pas":0.0333,"fps":30,"libres":[]}],"sequence":[{"rush":"A","debut":0,"fin":5,"duree":5,"plages":[[0,5]],"texte":"a b","mot_coupe":[{"mot":"x"}],"vignette":"/v"},{"rush":"A","debut":6,"fin":8,"duree":2,"plages":[[6,8]],"texte":"c","mot_coupe":[],"vignette":"/v"}],"propositions":[],"rendu":false,"perime":false}'
+  R="$(cd "$ROOT" && node tests/projet_page_smoke.mjs "$SM" 2>&1)"
+  assert_eq '{"status":"2 clips · 0:07","widths":[641,257],"cut":"{\"op\":\"couper\",\"i\":0,\"t\":2}","trim":"{\"op\":\"trimmer\",\"i\":0,\"cote\":\"fin\",\"t\":8.0333}","del":"{\"op\":\"retirer\",\"i\":0}"}' "$R" "projet.html under node: loads, widths 5:2, cut at the playhead, one-frame trim, remove"
+else
+  echo "skip - node absent : fumée de projet.html non lancée"
+fi
 
 # 3a3. l'accueil liste les projets au-dessus des rushs
 HM="$(curl -s "$U/")"
