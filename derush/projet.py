@@ -244,7 +244,7 @@ def valider(root, p, sequence):
         except (KeyError, TypeError, ValueError):
             raise ErreurProjet("bloc invalide dans la séquence") from None
         if r not in p.get("rushs", []):
-            raise ErreurProjet(f"rush inconnu : {r}")
+            raise ErreurProjet(f"rush absent du projet : {r}")
         ms = mots(root, r)
         d, f = caler(d, ms), caler(f, ms)
         if not d < f:

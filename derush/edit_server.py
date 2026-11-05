@@ -5,19 +5,24 @@ Pages : /  (accueil : déposer une vidéo, liste)   /edit?v=<STEM>  (montage par
 Les tâches longues (prep, proxy, render) tournent en fond, une par vidéo, journal dans _work/job.log.
 """
 
-import json, os, re, shutil, subprocess, sys, datetime, urllib.parse
+import json, os, re, shutil, subprocess, sys, datetime, threading, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 RUSHS = os.path.abspath(sys.argv[1])
 DERUSH = os.path.abspath(sys.argv[2])
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8790
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)  # lancé en -I : projet.py n'est pas sur le chemin sinon
+import projet  # noqa: E402
+from projet import ErreurProjet  # noqa: E402
 TAG = "barré dans l'éditeur"
-JOBS = {}  # stem -> {"proc", "kind", "log"}
+JOBS = {}  # stem -> {"proc", "kind", "log"} ; un montage de projet a la clé "projet:<nom>"
+PLOCK = threading.Lock()  # un seul load-modify-write de projet.json à la fois (jamais tenu pendant le LLM)
 STEPS = {
     "prep": "derush : silences, euh, transcription, alignement",
     "proxy": "version légère pour la page",
     "render": "montage final + vérification",
+    "projet": "montage du projet",
 }
 
 
@@ -30,7 +35,7 @@ def load(p, default):
 
 def safe_stem(s):
     s = os.path.basename(s or "")
-    if not s or s.startswith(".") or not os.path.isdir(os.path.join(RUSHS, s)):
+    if not s or s.startswith((".", "_")) or not os.path.isdir(os.path.join(RUSHS, s)):
         raise ValueError(f"vidéo inconnue : {s}")
     return s
 
@@ -40,13 +45,13 @@ def paths(stem):
     return out, os.path.join(out, "_work")
 
 
-def start_job(stem, kind, argv_chain):
+def start_job(stem, kind, argv_chain, log=None):
     """argv_chain : liste de commandes enchaînées (&&). Une seule tâche à la fois par vidéo."""
     j = JOBS.get(stem)
     if j and j["proc"].poll() is None:
         return False
     out, w = paths(stem) if os.path.isdir(os.path.join(RUSHS, stem)) else (None, None)
-    log = os.path.join(w, "job.log") if w else os.path.join(RUSHS, "_uploads", f"{stem}.job.log")
+    log = log or (os.path.join(w, "job.log") if w else os.path.join(RUSHS, "_uploads", f"{stem}.job.log"))
     os.makedirs(os.path.dirname(log), exist_ok=True)
     cmd = " && ".join(" ".join(_q(a) for a in argv) for argv in argv_chain)
     env = dict(os.environ, DERUSH_OUT_ROOT=RUSHS)
@@ -121,6 +126,8 @@ def videos():
     for (
         stem
     ) in JOBS:  # upload en cours de prep : le dossier n'a pas encore de source.txt
+        if stem.startswith("projet:"):  # le montage d'un projet n'est pas un rush
+            continue
         if not any(v["stem"] == stem for v in vs):
             vs.append(
                 {
@@ -237,6 +244,145 @@ def save(stem, body):
     }
 
 
+# ---------------------------------------------------------------- projets (le modèle vit dans projet.py)
+
+
+def pnom(q):
+    """Le nom du projet du paramètre p= : un nom invalide n'est pas un projet, donc 404 comme un inconnu."""
+    nom = q.get("p", "")
+    if not projet.NOM_RE.match(nom):
+        raise ErreurProjet(f"projet inconnu : {nom}")
+    return nom
+
+
+def perr_code(e):
+    m = str(e)
+    if "existe déjà" in m:
+        return 409
+    if m.startswith(("projet inconnu", "rush inconnu", "rush introuvable")):
+        return 404
+    return 400
+
+
+def pvue(b):
+    ms = projet.mots_du_bloc(RUSHS, b)
+    return {
+        "rush": b["rush"],
+        "debut": b["debut"],
+        "fin": b["fin"],
+        "duree": round(b["fin"] - b["debut"], 3),
+        "mots": ms,
+    }
+
+
+def pjob(nom):
+    return job_state(f"projet:{nom}")
+
+
+def projet_sortie(nom):
+    d = projet.dossier(RUSHS, nom)
+    for e in ("mp4", "m4a"):
+        f = os.path.join(d, f"{nom}.derush.{e}")
+        if os.path.exists(f):
+            return f
+    return None
+
+
+def projets():
+    base = os.path.join(RUSHS, "_projets")
+    out = []
+    for nom in os.listdir(base) if os.path.isdir(base) else []:
+        f = os.path.join(base, nom, "projet.json")
+        if not os.path.isfile(f) or not projet.NOM_RE.match(nom):
+            continue
+        p = projet.charger(RUSHS, nom)
+        out.append(
+            {
+                "nom": nom,
+                "rushs": len(p["rushs"]),
+                "blocs": len(p["sequence"]),
+                "propositions": len(p.get("propositions", [])),
+                "rendu": projet_sortie(nom) is not None,
+                "kind": projet.genre(RUSHS, p),
+                "mtime": os.path.getmtime(f),
+                "job": pjob(nom),
+            }
+        )
+    return sorted(out, key=lambda x: -x["mtime"])
+
+
+def projet_data(nom):
+    with PLOCK:
+        p = projet.charger(RUSHS, nom)
+    lib = projet.libres(RUSHS, p)
+    rushs = []
+    for stem in p["rushs"]:
+        k = projet.genre(RUSHS, {"rushs": [stem]})
+        rushs.append(
+            {
+                "stem": stem,
+                "kind": k,
+                "proxy": os.path.exists(os.path.join(paths(stem)[1], "proxy." + ("m4a" if k == "audio" else "mp4"))),
+                "rendu": projet.garde(RUSHS, stem) is not None,
+                "libres": [pvue(b) for b in lib[stem]],
+            }
+        )
+    return {
+        "nom": nom,
+        "kind": projet.genre(RUSHS, p),
+        "rushs": rushs,
+        "sequence": [pvue(b) for b in p["sequence"]],
+        "propositions": [dict(x, bloc=pvue(x["bloc"])) for x in p.get("propositions", [])],
+        "rendu": projet_sortie(nom) is not None,
+        "job": pjob(nom),
+    }
+
+
+def projet_post(path, q, raw):
+    """Les routes POST /projet*, avant tout `v=` : renvoie (objet JSON, code)."""
+    body = json.loads(raw.decode() or "{}") if raw else {}
+    if path == "/projet/new":
+        with PLOCK:
+            p = projet.nouveau(RUSHS, body.get("nom", ""), list(body.get("rushs", [])))
+        return p, 200
+    nom = pnom(q)
+    if path == "/projet/add":
+        with PLOCK:
+            return projet.ajouter(RUSHS, nom, body.get("rush", "")), 200
+    if path == "/projet/save":
+        with PLOCK:
+            p = projet.charger(RUSHS, nom)
+            p["sequence"] = projet.valider(RUSHS, p, body.get("sequence"))
+            projet.ecrire(RUSHS, nom, p)
+        return p, 200
+    if path == "/projet/placer":
+        if "accepter" in body:
+            with PLOCK:
+                return projet.accepter(RUSHS, nom, body["accepter"]), 200
+        if "refuser" in body:
+            with PLOCK:
+                return projet.refuser(RUSHS, nom, body["refuser"]), 200
+        b = body.get("bloc") or {}
+        with PLOCK:
+            p = projet.charger(RUSHS, nom)
+        bloc = projet.valider(RUSHS, p, [b])[0]
+        prop = projet.calculer_proposition(RUSHS, p, bloc)  # le LLM tourne hors verrou
+        with PLOCK:
+            projet.ajouter_proposition(RUSHS, nom, prop)
+        return prop, 200
+    if path == "/projet/render":
+        projet.charger(RUSHS, nom)
+        log = os.path.join(projet.dossier(RUSHS, nom), "_work", "job.log")
+        start_job(f"projet:{nom}", "projet", [[DERUSH, "projet", "render", nom]], log=log)
+        return pjob(nom), 200
+    if path == "/projet/reveal":
+        projet.charger(RUSHS, nom)
+        t = projet_sortie(nom) or projet.dossier(RUSHS, nom)
+        subprocess.run([os.environ.get("DERUSH_OPEN", "open"), "-R", t], capture_output=True)
+        return {"path": t}, 200
+    raise ErreurProjet("route inconnue")
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -279,6 +425,21 @@ class H(BaseHTTPRequestHandler):
                 return self._json(videos())
             if path == "/job":
                 return self._json(job_state(q.get("v", "")))
+            if path == "/projet":
+                return self._send(
+                    200,
+                    "text/html; charset=utf-8",
+                    open(os.path.join(HERE, "projet.html"), "rb").read(),
+                )
+            if path == "/projets":
+                return self._json(projets())
+            if path == "/projet/data":
+                return self._json(projet_data(pnom(q)))
+            if path in ("/projet/result.mp4", "/projet/result.m4a"):
+                f = projet_sortie(pnom(q))
+                if not f or not f.endswith(path[-3:]):
+                    raise FileNotFoundError("pas encore de montage pour ce projet")
+                return self._video(f)
             stem = safe_stem(q.get("v"))
             out, w = paths(stem)
             if path == "/data":
@@ -294,6 +455,8 @@ class H(BaseHTTPRequestHandler):
                     if os.path.exists(look)
                     else os.path.join(out, f"{stem}.derush.mp4")
                 )
+        except ErreurProjet as e:
+            return self._json({"error": str(e)}, perr_code(e))
         except (ValueError, FileNotFoundError) as e:
             return self._json({"error": str(e)}, 404)
         self._send(404, "text/plain", b"404")
@@ -342,6 +505,14 @@ class H(BaseHTTPRequestHandler):
                 400,
             )
         stem = name.rsplit(".", 1)[0]
+        nom = q.get("projet")
+        if nom:  # refusé avant de lire le corps : pas de gigaoctets pour rien
+            try:
+                if not projet.NOM_RE.match(nom):
+                    raise ErreurProjet(f"projet inconnu : {nom}")
+                projet.charger(RUSHS, nom)
+            except ErreurProjet as e:
+                return self._json({"error": str(e)}, 404)
         if os.path.exists(os.path.join(RUSHS, stem)):
             return self._json(
                 {"error": f"un rush {stem} existe déjà, ouvre-le dans la liste"}, 409
@@ -362,11 +533,10 @@ class H(BaseHTTPRequestHandler):
             return self._json({"error": "envoi interrompu"}, 400)
         os.rename(dest + ".part", dest)
         lang = q.get("lang", "fr") if q.get("lang") in ("fr", "en") else "fr"
-        start_job(
-            stem,
-            "prep",
-            [[DERUSH, "prep", dest, "--lang", lang], [DERUSH, "proxy", stem]],
-        )
+        chain = [[DERUSH, "prep", dest, "--lang", lang], [DERUSH, "proxy", stem]]
+        if nom:  # déposé dans un projet : prep, proxy, puis le rush rejoint le projet
+            chain.append([DERUSH, "projet", "add", nom, stem])
+        start_job(stem, "prep", chain)
         return self._json({"stem": stem})
 
     def do_POST(self):
@@ -374,6 +544,13 @@ class H(BaseHTTPRequestHandler):
         try:
             if path == "/upload":
                 return self._upload(q)
+            if path.startswith("/projet"):
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                try:
+                    obj, code = projet_post(path, q, raw)
+                except json.JSONDecodeError:
+                    return self._json({"error": "corps JSON invalide"}, 400)
+                return self._json(obj, code)
             stem = safe_stem(q.get("v"))
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             if path == "/proxy":
@@ -409,6 +586,8 @@ class H(BaseHTTPRequestHandler):
                     flush=True,
                 )
                 return self._json(res)
+        except ErreurProjet as e:
+            return self._json({"error": str(e)}, perr_code(e))
         except ValueError as e:
             return self._json({"error": str(e)}, 404)
         self._send(404, "text/plain", b"404")
