@@ -6,38 +6,37 @@
 <style>
   :root { --ink:#141414; --paper:#f4efe6; --mute:#a59f94; --cut:#c23b22; --hl:#ffe08a; }
   * { box-sizing:border-box; }
-  body { margin:0; font:16px/1.6 -apple-system, "Helvetica Neue", sans-serif; background:var(--paper); color:var(--ink); }
-  header { position:sticky; top:0; z-index:2; display:flex; gap:12px; align-items:center; padding:10px 20px; background:var(--ink); color:var(--paper); font-size:14px; }
+  body { margin:0; font:16px/1.5 -apple-system, "Helvetica Neue", sans-serif; background:var(--paper); color:var(--ink); }
+  header { position:sticky; top:0; z-index:3; display:flex; gap:12px; align-items:center; padding:10px 20px; background:var(--ink); color:var(--paper); font-size:14px; }
   header b { font-weight:600; margin-right:auto; }
   button { font:inherit; border:1px solid var(--paper); background:none; color:var(--paper); padding:5px 12px; border-radius:3px; cursor:pointer; }
   button.primary { background:var(--cut); border-color:var(--cut); }
-  main { display:grid; grid-template-columns:minmax(260px, 32vw) 1fr; gap:28px; padding:20px; }
-  .side { position:sticky; top:64px; align-self:start; max-height:calc(100vh - 84px); overflow:auto; }
-  video { width:100%; max-height:42vh; background:#000; border-radius:4px; }
+  button.tool { color:var(--ink); border-color:#999; font-size:14px; padding:4px 10px; }
+  button.tool.on { background:var(--ink); color:var(--paper); }
+  button:disabled { opacity:.4; cursor:default; }
+  #top { display:grid; grid-template-columns:minmax(260px, 34vw) 1fr; gap:24px; padding:16px 20px 0; }
+  video { width:100%; max-height:40vh; background:#000; border-radius:4px; }
   video.audio { height:56px; background:#2a2823; }
-  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#7b756a; margin:18px 0 6px; }
-  .bloc { background:#fff; border-radius:6px; padding:8px 12px; margin:0 0 6px; font-size:15px; }
-  .bloc .hd { display:flex; gap:8px; align-items:center; font-size:12px; color:#7b756a; }
-  .bloc .hd .sp { flex:1; }
-  .bloc button, .prop button { color:var(--ink); border-color:#bbb; padding:0 8px; font-size:12px; }
-  .bloc.libre { cursor:grab; border-left:3px solid #8d877c; }
-  .bloc.seq { border-left:3px solid var(--ink); }
-  .bloc.playing { box-shadow:0 0 0 2px var(--hl); }
-  .grip { cursor:grab; user-select:none; }
-  .txt { cursor:pointer; }
-  span.w { border-radius:2px; padding:0 1px; }
-  span.w.auto { color:var(--mute); text-decoration:line-through; }
-  span.w.sel { background:var(--hl); }
-  /* cible de dépôt confortable (26 px) : la taille ne change pas au survol, rien ne saute */
-  .slot { height:26px; border-radius:4px; margin:0; position:relative; }
-  .slot::before { content:""; position:absolute; left:0; right:0; top:11px; height:4px; border-radius:2px; background:transparent; }
-  .slot.over::before { background:#e8913a; }
-  .slot.over { background:#e8913a33; }
-  .prop { padding:8px 12px; border-left:3px solid #e8913a; background:#fff8ef; margin:0 0 6px; font-size:14px; border-radius:4px; }
-  .prop i { color:#7a5a2e; display:block; margin:2px 0 6px; }
-  .prop .txt span.w { background:#f6c48a; }
+  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#7b756a; margin:14px 0 6px; }
+  #tools { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:14px 20px 8px; }
+  #tools .sp { flex:1; }
+  #wrap { padding:0 20px 20px; }
+  #scroll { overflow-x:auto; padding-bottom:8px; }
+  #piste { position:relative; display:flex; height:104px; min-width:100%; background:#e6dfd2; border-radius:4px; user-select:none; }
+  .clip { position:relative; flex:none; height:100%; overflow:hidden; border-right:2px solid var(--paper); background:#3a3730; color:#fff; cursor:pointer; }
+  .clip img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:.55; pointer-events:none; }
+  .clip .tx { position:absolute; left:6px; right:6px; bottom:4px; font-size:12px; line-height:1.25; text-shadow:0 1px 2px #000; max-height:3.8em; overflow:hidden; pointer-events:none; }
+  .clip .du { position:absolute; left:6px; top:3px; font-size:11px; background:#000a; padding:0 4px; border-radius:2px; pointer-events:none; }
+  .clip .warn { position:absolute; right:6px; top:3px; font-size:11px; background:var(--hl); color:var(--ink); padding:0 4px; border-radius:2px; }
+  .clip.sel { outline:3px solid var(--hl); outline-offset:-3px; }
+  .clip .edge { position:absolute; top:0; bottom:0; width:9px; cursor:ew-resize; background:#ffffff22; }
+  .clip .edge.l { left:0; } .clip .edge.r { right:0; }
+  .clip .edge.act { background:var(--hl); }
+  .clip.ghost { opacity:.5; }
+  #ins { position:absolute; top:0; bottom:0; width:4px; background:#e8913a; display:none; z-index:2; }
+  #head { position:absolute; top:-4px; bottom:-4px; width:2px; background:var(--cut); z-index:3; pointer-events:none; }
   #status { font-size:13px; opacity:.85; }
-  #drop { border:2px dashed #b9b2a6; border-radius:8px; padding:14px; text-align:center; cursor:pointer; background:#fbf8f2; font-size:14px; }
+  #drop { border:2px dashed #b9b2a6; border-radius:8px; padding:12px; text-align:center; cursor:pointer; background:#fbf8f2; font-size:14px; }
   #drop.over { border-color:var(--cut); background:#fff; }
   .help { font-size:13px; color:#5b564e; margin-top:10px; line-height:1.5; }
   .err { color:#ffb4a6; }
@@ -50,32 +49,47 @@
   <span id="status"></span>
   <button id="render" class="primary">Monter le projet</button>
 </header>
-<main>
-  <div class="side">
+<div id="top">
+  <div>
     <video id="v" controls preload="auto" playsinline></video>
-    <div id="result" hidden style="margin-top:10px;font-size:13px">
-      <b>Résultat monté</b> <button id="showRes" style="color:var(--ink);border-color:#999;padding:1px 8px">voir le résultat</button>
+  </div>
+  <div>
+    <div id="result" hidden style="font-size:13px">
+      <b>Résultat monté</b> <button id="showRes" class="tool" style="padding:1px 8px">voir le résultat</button>
       <div style="margin-top:8px"><button id="reveal" class="primary" style="font-size:15px;padding:8px 16px">Ouvrir dans le Finder</button></div>
       <div id="stale" hidden style="margin-top:6px;color:var(--cut)">La séquence a changé depuis ce montage : « Monter le projet » pour le refaire.</div>
       <div id="where" style="margin-top:6px;color:var(--mute);word-break:break-all"></div>
     </div>
-    <div id="rushs"></div>
-    <h3>Ajouter une prise</h3>
+    <h3>Ajouter une prise (elle arrive en fin de piste)</h3>
     <div id="drop">Dépose une autre prise ici<input type="file" id="file" accept="video/*,audio/*" hidden></div>
-    <div style="margin-top:8px"><select id="pick"></select> <button id="add" style="color:var(--ink);border-color:#999">Ajouter</button></div>
+    <div style="margin-top:8px"><select id="pick"></select> <button id="add" class="tool">Ajouter</button></div>
     <div class="help">
-      Glisse un bloc gris dans la séquence, ou déplace les blocs de la séquence par leur poignée ⠿.
-      Clique un mot d'un bloc : il joue, et « couper ici » coupe le bloc avant ce mot.
-      <span style="background:#f6c48a">Orange</span> : proposition de placement, rien n'est appliqué sans « Accepter ».
+      Clique la piste pour poser la tête de lecture. <b>C</b> coupe le clip à la tête, <b>Suppr</b> retire le clip choisi,
+      glisse un clip pour changer l'ordre, tire un bord pour trimmer, <b>,</b> et <b>.</b> déplacent le bord choisi d'une image,
+      <b>Espace</b> lit toute la piste. Rien ne bouge sans ton geste.
     </div>
   </div>
-  <div id="sequence"></div>
-</main>
+</div>
+<div id="tools">
+  <button class="tool" id="bCut" title="couper à la tête de lecture (C)">✂ Couper</button>
+  <button class="tool" id="bDel" title="retirer le clip choisi (Suppr)">Retirer</button>
+  <span style="width:12px"></span>
+  <button class="tool on" id="bEdgeR" title="bord droit du clip choisi">bord droit</button>
+  <button class="tool" id="bEdgeL" title="bord gauche du clip choisi">bord gauche</button>
+  <button class="tool" id="bMinus" title="bord choisi, une image plus tôt (,)">− image</button>
+  <button class="tool" id="bPlus" title="bord choisi, une image plus tard (.)">+ image</button>
+  <span class="sp"></span>
+  <button class="tool" id="bPlay" title="lire toute la piste (Espace)">▶ Lire la piste</button>
+  <span id="tinfo" style="font-size:13px;color:#5b564e"></span>
+</div>
+<div id="wrap">
+  <div id="scroll"><div id="piste"><div id="ins"></div><div id="head"></div></div></div>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 const NOM = new URLSearchParams(location.search).get("p") || "";
 const Q = "?p=" + encodeURIComponent(NOM);
-let DATA = null, SEL = null, PLAY = null;
+let DATA = null, SEL = null, HEAD = 0, EDGE = "fin", WID = [];
 const v = $("#v");
 $("#title").textContent = "projet : " + NOM;
 const say = (m, bad) => { const s = $("#status"); s.textContent = m || ""; s.className = bad ? "err" : ""; };
@@ -85,18 +99,65 @@ function msgJob(j) { // /job rend "error" en BOOLÉEN : le message est dans "tai
   if (!j || !j.error) return null;
   return "En échec : " + ((j.tail || []).slice(-3).join(" ") || "voir le journal du projet");
 }
-function memeBloc(a, b) {
-  return !!a && !!b && a.rush === b.rush && Math.abs(a.debut - b.debut) < 1e-3 && Math.abs(a.fin - b.fin) < 1e-3;
-}
-function perimee(p, seq) { // la séquence a changé depuis Placer : Accepter serait refusé
-  if (p.apres < -1 || p.apres >= seq.length) return true;
-  if (p.hote == null) return !(p.apres === -1 && seq.length === 0);
-  return !memeBloc(p.apres >= 0 ? seq[p.apres] : seq[0], p.hote);
-}
-function placeProp(p, n) { // où afficher la proposition : après le bloc `apres`, ou en fin si ce bloc n'existe plus
-  return p.apres < -1 || p.apres >= n ? "fin" : p.apres;
-}
 function typeJson(j) { return typeof j.error === "string"; } // seule une chaîne est un message d'erreur de route
+function largeurs(clips, dispo, min) { // largeur ∝ durée, plancher `min` ; défilement si les planchers dépassent `dispo`
+  const n = clips.length, fixe = new Array(n).fill(false);
+  if (!n) return { pxs: 0, widths: [] };
+  let pxs = 0;
+  for (let tour = 0; tour <= n; tour++) {
+    const libres = clips.map((c, i) => i).filter(i => !fixe[i]);
+    if (!libres.length) break;
+    const somme = libres.reduce((t, i) => t + Math.max(clips[i].duree, 1e-6), 0);
+    const reste = dispo - fixe.filter(Boolean).length * min;
+    if (reste <= 0) { pxs = min / Math.min(...libres.map(i => Math.max(clips[i].duree, 1e-6))); break; }
+    pxs = reste / somme;
+    const trop = libres.filter(i => clips[i].duree * pxs < min);
+    if (!trop.length) break;
+    trop.forEach(i => { fixe[i] = true; });
+  }
+  return { pxs, widths: clips.map((c, i) => fixe[i] ? min : Math.max(min, c.duree * pxs)) };
+}
+function clipAt(widths, x) { // indice du clip sous le pixel x (borné aux deux bouts), -1 si piste vide
+  if (!widths.length) return -1;
+  let cum = 0;
+  for (let i = 0; i < widths.length; i++) { cum += widths[i]; if (x < cum) return i; }
+  return widths.length - 1;
+}
+function tempsDepuisX(clips, widths, x) { // pixel sur la piste -> temps global (somme des durées des clips d'avant + fraction)
+  let cum = 0, t = 0;
+  for (let i = 0; i < widths.length; i++) {
+    if (x < cum + widths[i]) return t + clips[i].duree * Math.max(0, (x - cum) / widths[i]);
+    cum += widths[i]; t += clips[i].duree;
+  }
+  return t;
+}
+function xDepuisTemps(clips, widths, t) { // l'inverse : où dessiner la tête de lecture
+  let cum = 0, acc = 0;
+  for (let i = 0; i < widths.length; i++) {
+    if (t < acc + clips[i].duree || i === widths.length - 1) return cum + widths[i] * Math.min(1, Math.max(0, (t - acc) / Math.max(clips[i].duree, 1e-6)));
+    cum += widths[i]; acc += clips[i].duree;
+  }
+  return 0;
+}
+function pasImage(rush) { return rush && rush.pas > 0 ? rush.pas : 1 / 30; }
+function bordApres(clip, cote, images, pas) { return Math.round((clip[cote] + images * pas) * 10000) / 10000; }
+function trajet(clips) { // les morceaux joués, dans l'ordre de la piste : chaque plage de chaque clip, début global cumulé
+  const seg = []; let t = 0;
+  clips.forEach((c, i) => c.plages.forEach(([a, z]) => { seg.push({ clip: i, rush: c.rush, a, z, debut: t }); t += z - a; }));
+  return seg;
+}
+function dureeTrajet(traj) { return traj.length ? traj[traj.length - 1].debut + traj[traj.length - 1].z - traj[traj.length - 1].a : 0; }
+function positionGlobale(traj, t) { // temps global -> {k, src}, null à la fin de la piste
+  if (!traj.length) return null;
+  if (t < 0) t = 0;
+  for (let k = 0; k < traj.length; k++) {
+    const s = traj[k];
+    if (t < s.debut + (s.z - s.a)) return { k, src: s.a + Math.max(0, t - s.debut) };
+  }
+  return null;
+}
+function globalDe(traj, k, src) { const s = traj[k]; return s.debut + Math.min(s.z - s.a, Math.max(0, src - s.a)); }
+function suivant(traj, k) { return k + 1 < traj.length ? k + 1 : null; }
 // </helpers>
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : { method: "POST", body: JSON.stringify(body) });
@@ -106,124 +167,95 @@ async function api(path, body) {
 }
 const job = stem => fetch("/job?v=" + encodeURIComponent(stem)).then(r => r.json()); // brut : error est un booléen
 const fmt = s => { const m = Math.floor(s / 60); return m + ":" + String(Math.round(s % 60)).padStart(2, "0"); };
-const ref = b => ({ rush: b.rush, debut: b.debut, fin: b.fin });
+const rush = stem => DATA.rushs.find(r => r.stem === stem);
+const clips = () => DATA.sequence;
+const traj = () => trajet(clips());
 
-function words(b) {
-  const t = el("span", "txt");
-  b.mots.forEach((m, k) => {
-    const s = el("span", "w" + (m.garde ? "" : " auto"), m.w);
-    s.dataset.k = k;
-    t.append(s, " ");
+function draw() { // piste : un bloc par clip, largeur ∝ durée
+  const P = $("#piste");
+  P.querySelectorAll(".clip").forEach(n => n.remove());
+  const cs = clips();
+  const dispo = Math.max(300, $("#scroll").clientWidth - 2);
+  const L = largeurs(cs, dispo, 40);
+  WID = L.widths;
+  P.style.width = Math.max(dispo, WID.reduce((a, b) => a + b, 0)) + "px";
+  cs.forEach((c, i) => {
+    const d = el("div", "clip" + (i === SEL ? " sel" : "")); d.style.width = WID[i] + "px"; d.dataset.i = i;
+    const im = el("img"); im.loading = "lazy"; im.src = c.vignette; im.onerror = () => im.remove();
+    d.append(im, el("span", "du", fmt(c.duree)), el("span", "tx", c.texte || c.rush));
+    if (c.mot_coupe && c.mot_coupe.length) { const w = el("span", "warn", "mot coupé"); w.title = "mot coupé, à écouter : " + c.mot_coupe.map(x => x.mot).join(", "); d.append(w); }
+    d.append(el("span", "edge l" + (i === SEL && EDGE === "debut" ? " act" : "")), el("span", "edge r" + (i === SEL && EDGE === "fin" ? " act" : "")));
+    P.insertBefore(d, $("#ins"));
   });
-  return t;
+  placeHead();
+  const total = dureeTrajet(traj());
+  $("#tinfo").textContent = `${cs.length} clip${cs.length > 1 ? "s" : ""} · ${fmt(total)}`;
+  const c = SEL != null ? cs[SEL] : null;
+  $("#bDel").disabled = !c;
+  $("#bMinus").disabled = $("#bPlus").disabled = !c;
+  $("#bEdgeR").classList.toggle("on", EDGE === "fin"); $("#bEdgeL").classList.toggle("on", EDGE === "debut");
 }
-function slot(k) {
-  const s = el("div", "slot");
-  s.ondragover = e => { e.preventDefault(); s.classList.add("over"); };
-  s.ondragleave = () => s.classList.remove("over");
-  s.ondrop = e => { e.preventDefault(); s.classList.remove("over"); drop(k, e); };
-  return s;
-}
-async function save(seq) {
-  try { DATA = await api("/projet/save" + Q, { sequence: seq.map(ref) }); say("séquence enregistrée"); await load(); }
-  catch (e) { say(e.message, true); }
-}
-function drop(k, e) {
-  let d; try { d = JSON.parse(e.dataTransfer.getData("text/plain")); } catch (_) { return; }
-  const seq = DATA.sequence.map(ref);
-  if (d.src === "libre") seq.splice(k, 0, d.bloc);
-  else if (d.src === "seq") { const [b] = seq.splice(d.i, 1); seq.splice(d.i < k ? k - 1 : k, 0, b); }
-  save(seq);
-}
-function proposition(k) {
-  const p = DATA.propositions[k];
-  const d = el("div", "prop");
-  const head = el("b", null, `Proposition ${p.cas === "A" ? "(reprise)" : "(par le LLM)"} : ${p.bloc.rush}`);
-  d.append(head, el("i", null, p.raison + (p.couper_a != null ? " Le bloc d'accueil est coupé à cet endroit." : "")));
-  const t = words(p.bloc); t.onclick = () => play(p.bloc);
-  const a = el("button", null, "Accepter"), r = el("button", null, "Refuser");
-  const vieille = perimee(p, DATA.sequence);
-  if (vieille) d.prepend(el("i", null, "périmée : la séquence a changé depuis Placer, refuse-la et relance Placer"));
-  a.onclick = async () => { try { await api("/projet/placer" + Q, { accepter: k }); say("proposition appliquée. Les autres propositions peuvent être périmées : relance Placer"); await load(); } catch (e) { say(e.message, true); await load(); } };
-  r.onclick = async () => { try { await api("/projet/placer" + Q, { refuser: k }); await load(); } catch (e) { say(e.message, true); } };
-  d.append(t, document.createElement("br"));
-  if (!vieille) d.append(a, " ");
-  d.append(r);
-  return d;
-}
+function placeHead() { $("#head").style.left = xDepuisTemps(clips(), WID, HEAD) + "px"; }
 function render() {
-  const S = $("#sequence"); S.innerHTML = "";
-  const n = DATA.sequence.length;
-  const ps = (i) => DATA.propositions.map((p, k) => [p, k]).filter(([p]) => placeProp(p, n) === i);
-  const props = i => ps(i).forEach(([p, k]) => S.append(proposition(k)));
-  props(-1);
-  S.append(slot(0));
-  DATA.sequence.forEach((b, i) => {
-    const d = el("div", "bloc seq"); d.dataset.i = i;
-    const g = el("span", "grip", "⠿"); g.draggable = true;
-    g.ondragstart = e => e.dataTransfer.setData("text/plain", JSON.stringify({ src: "seq", i }));
-    const x = el("button", null, "✕"); x.title = "retirer ce bloc";
-    x.onclick = () => save(DATA.sequence.filter((_, j) => j !== i));
-    const hd = el("div", "hd"); hd.append(g, `${b.rush} · ${fmt(b.duree)}`, el("span", "sp"), x);
-    const t = words(b);
-    t.onclick = e => {
-      play(b, d);
-      const w = e.target.closest("span.w"); if (!w) return;
-      document.querySelectorAll("span.w.sel").forEach(n => n.classList.remove("sel"));
-      document.querySelectorAll(".cut").forEach(n => n.remove());
-      w.classList.add("sel"); SEL = { i, k: +w.dataset.k };
-      if (SEL.k > 0) { const c = el("button", "cut", "✂ couper ici"); c.onclick = ev => { ev.stopPropagation(); couper(); }; w.after(c); }
-    };
-    d.append(hd, t); S.append(d, slot(i + 1)); props(i);
-  });
-  props("fin");
-  const R = $("#rushs"); R.innerHTML = "";
-  DATA.rushs.forEach(r => {
-    R.append(el("h3", null, `${r.stem}${r.kind === "audio" ? " · audio" : ""}${r.rendu ? "" : " · pas encore monté"}`));
-    if (!r.libres.length) R.append(el("div", "help", "Tous ses blocs sont dans la séquence."));
-    r.libres.forEach(b => {
-      const d = el("div", "bloc libre"); d.draggable = true;
-      d.ondragstart = e => e.dataTransfer.setData("text/plain", JSON.stringify({ src: "libre", bloc: ref(b) }));
-      const p = el("button", null, "Placer"); p.onclick = () => placer(b);
-      const hd = el("div", "hd"); hd.append(fmt(b.duree), el("span", "sp"), p);
-      const t = words(b); t.onclick = () => play(b, d);
-      d.append(hd, t); R.append(d);
-    });
-  });
+  if (SEL != null && SEL >= clips().length) SEL = clips().length ? clips().length - 1 : null;
+  HEAD = Math.min(HEAD, dureeTrajet(traj()));
+  draw();
   $("#result").hidden = !DATA.rendu;
   $("#stale").hidden = !DATA.perime;
   file.accept = DATA.kind === "audio" ? "audio/*" : "video/*";
   fillPick();
 }
-async function couper() {
-  const b = DATA.sequence[SEL.i], m = b.mots, k = SEL.k;
-  const t = (m[k - 1].e + m[k].s) / 2;
-  const seq = DATA.sequence.map(ref);
-  seq.splice(SEL.i, 1, { rush: b.rush, debut: b.debut, fin: t }, { rush: b.rush, debut: t, fin: b.fin });
-  await save(seq);
+async function op(o, apres) { // une opération de piste : le serveur applique, la page redessine d'après sa réponse
+  try { DATA = await api("/projet/op" + Q, o); if (apres) apres(); render(); say(""); return true; }
+  catch (e) { say(e.message, true); return false; }
 }
-async function placer(b) {
-  say("placement en cours…");
-  try { const p = await api("/projet/placer" + Q, { bloc: ref(b) }); say(p.cas === "A" ? "reprise trouvée : proposition en orange" : "proposition du LLM en orange"); await load(); }
-  catch (e) { say(e.message, true); }
+function clipSousTete() {
+  const p = positionGlobale(traj(), HEAD);
+  return p ? { i: traj()[p.k].clip, t: p.src } : null;
 }
-async function play(b, node) {
-  const r = DATA.rushs.find(x => x.stem === b.rush);
-  document.querySelectorAll(".bloc.playing").forEach(n => n.classList.remove("playing")); if (node) node.classList.add("playing");
+function couperIci() {
+  const c = clipSousTete();
+  if (!c) return say("pose la tête de lecture dans un clip", true);
+  op({ op: "couper", i: c.i, t: c.t }, () => { SEL = c.i; });
+}
+function retirerChoisi() { if (SEL != null) { const i = SEL; op({ op: "retirer", i }, () => { SEL = Math.min(i, clips().length - 2); if (SEL < 0) SEL = null; }); } }
+function bougerBord(images) {
+  if (SEL == null) return;
+  const c = clips()[SEL];
+  op({ op: "trimmer", i: SEL, cote: EDGE, t: bordApres(c, EDGE, images, pasImage(rush(c.rush))) });
+}
+$("#bCut").onclick = couperIci;
+$("#bDel").onclick = retirerChoisi;
+$("#bMinus").onclick = () => bougerBord(-1);
+$("#bPlus").onclick = () => bougerBord(1);
+$("#bEdgeR").onclick = () => { EDGE = "fin"; draw(); };
+$("#bEdgeL").onclick = () => { EDGE = "debut"; draw(); };
+
+// la tête de lecture : un clic sur la piste la pose et charge le bon proxy
+$("#piste").addEventListener("click", e => {
+  const c = e.target.closest(".clip"); if (!c) return;
+  const r = $("#piste").getBoundingClientRect();
+  SEL = +c.dataset.i;
+  HEAD = tempsDepuisX(clips(), WID, e.clientX - r.left);
+  draw(); aller(HEAD);
+});
+async function chargerProxy(stem) {
+  const r = rush(stem);
   v.className = r.kind === "audio" ? "audio" : "";
   if (!r.proxy) {
-    say("préparation de l'aperçu de " + b.rush + "…");
-    await fetch("/proxy?v=" + encodeURIComponent(b.rush), { method: "POST" });
-    try {
-      for (;;) { const j = await job(b.rush); const m = msgJob(j); if (m) return say(m, true); if (!j.running) break; await new Promise(z => setTimeout(z, 1500)); }
-    } catch (e) { return say(e.message, true); }
+    say("préparation de l'aperçu de " + stem + "…");
+    await fetch("/proxy?v=" + encodeURIComponent(stem), { method: "POST" });
+    for (;;) { const j = await job(stem); const m = msgJob(j); if (m) throw new Error(m); if (!j.running) break; await new Promise(z => setTimeout(z, 1500)); }
     r.proxy = true; say("");
   }
-  const src = `/proxy.${r.kind === "audio" ? "m4a" : "mp4"}?v=${encodeURIComponent(b.rush)}`;
+  const src = `/proxy.${r.kind === "audio" ? "m4a" : "mp4"}?v=${encodeURIComponent(stem)}`;
   if (!v.src.endsWith(src)) { v.src = src; await new Promise(z => v.addEventListener("loadedmetadata", z, { once: true })); }
-  PLAY = b; v.currentTime = b.debut; v.play();
 }
-v.ontimeupdate = () => { if (PLAY && v.currentTime >= PLAY.fin) { v.pause(); PLAY = null; } };
+async function aller(t) { // pose le lecteur sur le temps global t (sans jouer)
+  const p = positionGlobale(traj(), t);
+  if (!p) return;
+  try { await chargerProxy(traj()[p.k].rush); v.currentTime = p.src; } catch (e) { say(e.message, true); }
+}
 
 async function load() { DATA = await api("/projet/data" + Q); render(); }
 function fillPick() {
@@ -249,12 +281,12 @@ function send(f) {
   x.onload = async () => {
     const r = JSON.parse(x.responseText);
     if (r.error) return say(r.error, true);
-    say(`${r.stem} reçue : le derush tourne, elle rejoindra le projet toute seule`);
+    say(`${r.stem} reçue : le derush tourne, elle arrivera en fin de piste toute seule`);
     for (let n = 0; n < 800; n++) {
       await new Promise(z => setTimeout(z, 3000));
       try {
         await load();
-        if (DATA.rushs.some(q => q.stem === r.stem)) return say(`${r.stem} est dans le projet`);
+        if (DATA.rushs.some(q => q.stem === r.stem)) return say(`${r.stem} est en fin de piste`);
         const m = msgJob(await job(r.stem)); // le prep ou l'ajout a échoué : on le dit au lieu d'attendre
         if (m) return say(`${r.stem} : ${m}`, true);
       } catch (_) {}
@@ -270,7 +302,7 @@ async function reveal() {
   $("#where").textContent = r.path || "";
 }
 $("#reveal").onclick = reveal;
-$("#showRes").onclick = () => { v.className = DATA.kind === "audio" ? "audio" : ""; v.src = `/projet/result.${DATA.kind === "audio" ? "m4a" : "mp4"}${Q}&t=${Date.now()}`; PLAY = null; v.play(); };
+$("#showRes").onclick = () => { v.className = DATA.kind === "audio" ? "audio" : ""; v.src = `/projet/result.${DATA.kind === "audio" ? "m4a" : "mp4"}${Q}&t=${Date.now()}`; v.play(); };
 $("#render").onclick = async () => {
   try {
     say("montage du projet…");
@@ -286,6 +318,7 @@ $("#render").onclick = async () => {
     await load(); say("projet monté"); $("#showRes").click(); reveal();
   } catch (e) { say(e.message, true); }
 };
+window.addEventListener("resize", () => DATA && draw());
 load().catch(e => say(e.message, true));
 </script>
 </body>

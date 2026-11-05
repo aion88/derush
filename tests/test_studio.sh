@@ -165,7 +165,7 @@ assert_eq 4 "$(ls "$VG" | wc -l | tr -d ' ')" "vignette cache stays bounded (4 d
 
 # 3a2. pages : projet.html, edit.html et home.html se chargent ; leur script au moins se parse
 PG="$(curl -s "$U/projet?p=essai")"
-assert_contains "$PG" 'id="sequence"' "projet page has the sequence"
+assert_contains "$PG" 'id="piste"' "projet page has the track"
 assert_contains "$PG" "Monter le projet" "projet page has the render button"
 for page in projet edit home; do
   js="$("$DERUSH_PY" -I -c 'import re,sys;m=re.search(r"<script>(.*)</script>",open(sys.argv[1]).read(),re.S);print(m.group(1) if m else "")' "$ROOT/derush/$page.html")"
@@ -173,17 +173,29 @@ for page in projet edit home; do
   assert_eq ok "$r" "$page.html: script parses"
 done
 
-# 3a2b. projet.html : la logique pure (échec d'un job, proposition périmée, placement) se teste hors navigateur
+# 3a2b. projet.html : la logique pure (messages de job, largeurs, tête de lecture, trajet) se teste hors navigateur
 HELP="$("$DERUSH_PY" -I -c 'import re,sys;print(re.search(r"// <helpers>.*?// </helpers>",open(sys.argv[1]).read(),re.S).group(0))' "$ROOT/derush/projet.html")"
-CASES='const A={rush:"a",debut:1,fin:2},B={rush:"a",debut:3,fin:4}; return JSON.stringify([
+CASES='const W = o => o.widths.map(Math.round);
+const cs = [{duree:10},{duree:10}];
+const tr = trajet([{rush:"a",plages:[[0,2],[3,4]]},{rush:"b",plages:[[10,12]]}]);
+const P = p => p && [p.k, Math.round(p.src*1000)/1000];
+return JSON.stringify([
   msgJob({error:true,tail:["x","y"]}), msgJob({error:false,tail:["x"]}), msgJob({running:true}),
   typeJson({error:true}), typeJson({error:"boum"}), typeJson({running:false}),
-  perimee({apres:5,hote:A},[A,B]), perimee({apres:0,hote:A},[A,B]), perimee({apres:1,hote:A},[A,B]),
-  perimee({apres:-1,hote:A},[A,B]), perimee({apres:-1,hote:B},[A,B]), perimee({apres:-1,hote:null},[]), perimee({apres:-1,hote:null},[A]),
-  placeProp({apres:5},2), placeProp({apres:1},2), placeProp({apres:-1},2)])'
+  W(largeurs(cs,200,40)), W(largeurs([{duree:1},{duree:9}],100,40)), W(largeurs([{duree:1},{duree:1},{duree:1}],100,40)), W(largeurs([],100,40)),
+  clipAt([100,100],50), clipAt([100,100],100), clipAt([100,100],999), clipAt([100,100],-5), clipAt([],5),
+  tempsDepuisX(cs,[100,100],150), tempsDepuisX(cs,[100,100],0), tempsDepuisX(cs,[100,100],200),
+  xDepuisTemps(cs,[100,100],15), xDepuisTemps(cs,[100,100],20), xDepuisTemps(cs,[100,100],0),
+  pasImage({pas:0.04}), Math.round(pasImage(undefined)*10000)/10000,
+  bordApres({debut:2,fin:5},"fin",3,1/30), bordApres({debut:2,fin:5},"debut",-1,1/30),
+  tr.map(s => [s.clip,s.a,s.z,s.debut]), dureeTrajet(tr), dureeTrajet([]),
+  P(positionGlobale(tr,2.5)), P(positionGlobale(tr,3.5)), positionGlobale(tr,5), P(positionGlobale(tr,-1)), P(positionGlobale(tr,2)),
+  globalDe(tr,1,3.5), suivant(tr,0), suivant(tr,2)])'
 R="$(osascript -l JavaScript -e 'function run(a){ return new Function(a[0] + String.fromCharCode(10) + a[1])() }' "$HELP" "$CASES" 2>&1)"
-assert_eq '["En échec : x y",null,null,false,true,false,true,false,true,false,true,false,true,"fin",1,-1]' "$R" "projet.html helpers: job failure message, stale proposals, placement"
-assert_contains "$(cat "$ROOT/derush/projet.html")" ".slot { height:26px" "drop slot is a comfortable 26 px target"
+assert_eq '["En échec : x y",null,null,false,true,false,[100,100],[40,60],[40,40,40],[],0,1,1,0,-1,15,0,20,150,200,0,0.04,0.0333,5.1,1.9667,[[0,0,2,0],[0,3,4,2],[1,10,12,3]],5,0,[1,3.5],[2,10.5],null,[0,0],[1,3],2.5,1,null]' "$R" "projet.html helpers: job message, widths, playhead mapping, play path"
+PH="$(cat "$ROOT/derush/projet.html")"
+assert_contains "$PH" '"/projet/op"' "projet.html drives the track through /projet/op"
+for banned in placer ".slot" "Accepter"; do case "$PH" in *"$banned"*) bad=1;; *) bad=0;; esac; assert_eq 0 "$bad" "projet.html no longer carries « $banned »"; done
 
 # 3a3. l'accueil liste les projets au-dessus des rushs
 HM="$(curl -s "$U/")"
