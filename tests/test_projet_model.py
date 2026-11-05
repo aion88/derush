@@ -333,5 +333,222 @@ class TestProjet(Base):
         self.assertEqual(k.strip(), "video")
 
 
+LLM_APRES = (
+    'cat >/dev/null; echo "{\\"apres\\": %s, \\"couper_a_mot\\": %s, \\"raison\\": \\"suite logique\\"}"'
+)
+
+
+class Placement(Base):
+    def setUp(self):
+        super().setUp()
+        # H : 4 paragraphes (trou 1.5 s entre eux)
+        h = suite(
+            1.0,
+            [("le", 0), ("montage", 0.1), ("prend", 0.1), ("beaucoup", 0.1), ("de", 0.1),
+             ("temps", 0.1), ("quand", 0.1), ("on", 0.1), ("filme", 0.1), ("seul.", 0.1),
+             ("ensuite", 1.5), ("on", 0.1), ("coupe", 0.1), ("les", 0.1), ("silences.", 0.1),
+             ("voilà", 1.5), ("c'est", 0.1), ("tout", 0.1), ("merci.", 0.1),
+             ("fin", 1.5), ("de", 0.1), ("la", 0.1), ("prise.", 0.1)],
+        )
+        ecrire_rush(self.root, "H", h, keep=[(0.0, 100.0)])
+        n = suite(
+            1.0,
+            [("alors", 0), ("le", 0.1), ("montage", 0.1), ("prend", 0.1), ("beaucoup", 0.1),
+             ("de", 0.1), ("temps", 0.1), ("et", 0.1), ("il", 0.1), ("faut", 0.1), ("couper.", 0.1),
+             ("merci", 1.5), ("à", 0.1), ("tous", 0.1), ("les", 0.1), ("amis.", 0.1)],
+        )
+        ecrire_rush(self.root, "N", n, keep=[(0.0, 100.0)])
+        self.p = projet.nouveau(self.root, "demo", ["H", "N"])
+        self.seq = self.p["sequence"]
+        self.nb = projet.blocs(self.root, "N")
+
+    def milieu(self, stem, i):
+        """Milieu du trou entre le mot i-1 et le mot i du rush."""
+        ms = projet.mots(self.root, stem)
+        return (ms[i - 1]["e"] + ms[i]["s"]) / 2
+
+    def llm(self, apres, coupe):
+        return mock.patch.dict(os.environ, {"DERUSH_LLM": LLM_APRES % (apres, coupe)})
+
+    def proposer(self, apres, coupe, bloc=None):
+        with self.llm(apres, coupe):
+            pr = projet.calculer_proposition(self.root, projet.charger(self.root, "demo"), bloc or self.nb[1])
+        projet.ajouter_proposition(self.root, "demo", pr)
+        return pr
+
+    def test_normaliser(self):
+        self.assertEqual(projet.normaliser("Montage,"), "montage")
+        self.assertEqual(projet.normaliser("L'idée"), "l'idée")
+
+    def test_cas_a_milieu(self):
+        pr = projet.reprise(self.root, self.seq, self.nb[0])
+        self.assertEqual(pr["cas"], "A")
+        self.assertEqual(pr["apres"], 0)
+        self.assertAlmostEqual(pr["couper_a"], self.milieu("H", 6), places=3)  # temps|quand
+        self.assertAlmostEqual(pr["bloc"]["debut"], self.milieu("N", 7), places=3)  # temps|et
+        self.assertAlmostEqual(pr["bloc"]["fin"], self.nb[0]["fin"], places=3)
+        self.assertIn("reprend", pr["raison"])
+        self.assertEqual(pr["hote"], self.seq[0])
+
+    def test_cas_a_fin_de_bloc(self):
+        ecrire_rush(self.root, "F", suite(1.0, [("oui", 0), ("quand", 0.1), ("on", 0.1), ("filme", 0.1), ("seul", 0.1), ("puis", 0.1), ("autre", 0.1), ("chose.", 0.1)]))
+        bloc = projet.blocs(self.root, "F")[0]
+        pr = projet.reprise(self.root, self.seq, bloc)
+        self.assertEqual(pr["apres"], 0)
+        self.assertIsNone(pr["couper_a"])
+
+    def test_cas_a_trois_mots_ne_suffit_pas(self):
+        ecrire_rush(self.root, "T", suite(1.0, [("alors", 0), ("prend", 0.1), ("beaucoup", 0.1), ("de", 0.1), ("choses", 0.1), ("très", 0.1), ("variées.", 0.1)]))
+        self.assertIsNone(projet.reprise(self.root, self.seq, projet.blocs(self.root, "T")[0]))
+
+    def test_cas_a_hors_huit_premiers_mots(self):
+        def bloc(prefix):
+            mm = [(f"f{i}", 0.1) for i in range(prefix)] + [("montage", 0.1), ("prend", 0.1), ("beaucoup", 0.1), ("de", 0.1), ("zzz", 0.1), ("yyy.", 0.1)]
+            ecrire_rush(self.root, f"X{prefix}", suite(1.0, mm))
+            return projet.blocs(self.root, f"X{prefix}")[0]
+        # doublon aux indices 4..7 : trouvé ; 5..8 : pas dans les 8 premiers mots
+        self.assertIsNotNone(projet.reprise(self.root, self.seq, bloc(4)))
+        self.assertIsNone(projet.reprise(self.root, self.seq, bloc(5)))
+
+    def test_cas_a_casse_ponctuation(self):
+        ecrire_rush(self.root, "C", suite(1.0, [("Alors,", 0), ("Le", 0.1), ("montage,", 0.1), ("prend", 0.1), ("beaucoup;", 0.1), ("DE", 0.1), ("temps", 0.1), ("et", 0.1), ("voilà.", 0.1)]))
+        pr = projet.reprise(self.root, self.seq, projet.blocs(self.root, "C")[0])
+        self.assertEqual(pr["cas"], "A")
+
+    def test_cas_a_rien_de_neuf(self):
+        ecrire_rush(self.root, "R", suite(1.0, [("le", 0), ("montage", 0.1), ("prend", 0.1), ("beaucoup", 0.1), ("de", 0.1), ("temps.", 0.1)]))
+        with self.assertRaises(ErreurProjet) as c:
+            projet.reprise(self.root, self.seq, projet.blocs(self.root, "R")[0])
+        self.assertIn("rien de neuf", str(c.exception))
+
+    def test_cas_a_derniere_occurrence(self):
+        # le passage existe dans 2 blocs de la séquence : on choisit le dernier
+        seq = self.seq + [self.seq[0]]
+        pr = projet.reprise(self.root, seq, self.nb[0])
+        self.assertEqual(pr["apres"], len(seq) - 1)
+
+    def test_cas_b_llm_simule(self):
+        with self.llm(0, 2):
+            pr = projet.calculer_proposition(self.root, self.p, self.nb[1])
+        self.assertEqual(pr["cas"], "B")
+        self.assertEqual(pr["apres"], 0)
+        self.assertAlmostEqual(pr["couper_a"], self.milieu("H", 2), places=3)
+        self.assertEqual(pr["hote"], self.seq[0])
+        p = projet.ajouter_proposition(self.root, "demo", pr)
+        self.assertEqual(p["sequence"], self.seq)
+        self.assertEqual(len(projet.charger(self.root, "demo")["propositions"]), 1)
+
+    def test_cas_b_reponse_hors_sequence(self):
+        for apres, coupe in ((99, "null"), (0, 99), (0, 0), (-1, 3)):
+            with self.llm(apres, coupe):
+                with self.assertRaises(ErreurProjet) as c:
+                    projet.calculer_proposition(self.root, self.p, self.nb[1])
+            self.assertIn("réponse LLM hors séquence", str(c.exception))
+        self.assertEqual(projet.charger(self.root, "demo")["propositions"], [])
+
+    def test_cas_b_reponse_illisible(self):
+        with mock.patch.dict(os.environ, {"DERUSH_LLM": "cat >/dev/null; echo pas du json"}):
+            with self.assertRaises(ErreurProjet):
+                projet.calculer_proposition(self.root, self.p, self.nb[1])
+
+    def test_cas_b_sans_llm(self):
+        env = {k: v for k, v in os.environ.items() if k != "DERUSH_LLM"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch("llm.pick", return_value=("none", None)):
+            with self.assertRaises(ErreurProjet) as c:
+                projet.calculer_proposition(self.root, self.p, self.nb[1])
+        self.assertEqual(str(c.exception), llm.NO_LLM_MSG)
+
+    def test_accepter_coupe_et_insere(self):
+        self.proposer(0, 2)
+        avant = len(self.seq)
+        p = projet.accepter(self.root, "demo", 0)
+        self.assertEqual(len(p["sequence"]), avant + 2)
+        self.assertEqual([b["rush"] for b in p["sequence"][:3]], ["H", "N", "H"])
+        self.assertEqual(p["sequence"][1], self.nb[1])
+        self.assertEqual(p["propositions"], [])
+        self.assertEqual(projet.charger(self.root, "demo"), p)
+
+    def test_accepter_cas_a_retire_le_doublon(self):
+        with mock.patch.dict(os.environ, {}):
+            pr = projet.calculer_proposition(self.root, self.p, self.nb[0])
+        projet.ajouter_proposition(self.root, "demo", pr)
+        p = projet.accepter(self.root, "demo", 0)
+        texte = projet._texte(self.root, p["sequence"][1])
+        self.assertTrue(texte.startswith("et il faut"), texte)
+
+    def test_refuser(self):
+        self.proposer(0, 2)
+        p = projet.refuser(self.root, "demo", 0)
+        self.assertEqual(p["propositions"], [])
+        self.assertEqual(p["sequence"], self.seq)
+
+    def test_accepter_inconnue(self):
+        with self.assertRaises(ErreurProjet):
+            projet.accepter(self.root, "demo", 3)
+
+    def perimee(self, k=0):
+        avant = projet.charger(self.root, "demo")
+        with self.assertRaises(ErreurProjet) as c:
+            projet.accepter(self.root, "demo", k)
+        self.assertIn("proposition périmée", str(c.exception))
+        self.assertEqual(projet.charger(self.root, "demo"), avant)
+
+    def test_accepter_perimee(self):
+        self.proposer(0, 2)
+        p = projet.charger(self.root, "demo")
+        p["sequence"] = p["sequence"][1:]
+        projet.ecrire(self.root, "demo", p)
+        self.perimee()
+
+    def test_perimee_sans_coupe_reordonne(self):
+        self.proposer(1, "null")
+        p = projet.charger(self.root, "demo")
+        s = p["sequence"]
+        p["sequence"] = [s[0], s[2], s[1]] + s[3:]
+        projet.ecrire(self.root, "demo", p)
+        self.perimee()
+
+    def test_perimee_bloc_precedent_retire(self):
+        self.proposer(2, "null")
+        p = projet.charger(self.root, "demo")
+        p["sequence"] = p["sequence"][1:]
+        projet.ecrire(self.root, "demo", p)
+        self.perimee()
+
+    def test_perimee_debut(self):
+        self.proposer(-1, "null")
+        self.assertEqual(projet.charger(self.root, "demo")["propositions"][0]["hote"], self.seq[0])
+        p = projet.charger(self.root, "demo")
+        s = p["sequence"]
+        p["sequence"] = [s[3]] + s[:3]
+        projet.ecrire(self.root, "demo", p)
+        self.perimee()
+        p["sequence"] = s
+        projet.ecrire(self.root, "demo", p)
+        r = projet.accepter(self.root, "demo", 0)
+        self.assertEqual(r["sequence"][0], self.nb[1])
+
+    def test_valider_reordonne_et_raccourci(self):
+        p = projet.charger(self.root, "demo")
+        s = p["sequence"]
+        neuf = projet.valider(self.root, p, [s[2], s[0], s[3]])
+        p["sequence"] = neuf
+        projet.ecrire(self.root, "demo", p)
+        self.assertEqual(projet.charger(self.root, "demo")["sequence"], neuf)
+
+    def test_cli_placer_accepter_refuser(self):
+        py = [sys.executable, "-I", os.path.join(DERUSH, "projet.py")]
+        nb = self.nb[0]
+        out = subprocess.run(py + ["placer", self.root, "demo", "N", str(nb["debut"]), str(nb["fin"])], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(json.loads(out)["cas"], "A")
+        self.assertEqual(len(projet.charger(self.root, "demo")["propositions"]), 1)
+        self.assertEqual(len(projet.charger(self.root, "demo")["sequence"]), 4)
+        subprocess.run(py + ["accepter", self.root, "demo", "0"], check=True)
+        self.assertEqual(len(projet.charger(self.root, "demo")["sequence"]), 6)
+        r = subprocess.run(py + ["refuser", self.root, "demo", "0"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("Traceback", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

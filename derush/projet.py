@@ -11,6 +11,8 @@ Usage (root = $DERUSH_OUT_ROOT) :
   projet.py add <root> <nom> <STEM>      ajoute un rush
   projet.py kind <root> <nom>            audio ou video
   projet.py montrer <root> <nom>         une ligne par bloc : rush, début, fin, texte
+  projet.py placer <root> <nom> <STEM> <début> <fin>   propose où va ce bloc (JSON), le range
+  projet.py accepter|refuser <root> <nom> <k>          applique ou efface la proposition k
 Les erreurs sortent en français sur stderr, code 1, sans traceback.
 """
 
@@ -330,6 +332,192 @@ def genre(root, p):
     return _kind(root, p["rushs"][0]) if p.get("rushs") else "video"
 
 
+# ---------------------------------------------------------------- placement
+
+
+def normaliser(w):
+    """Minuscules, accents gardés, tout sauf lettres, chiffres et apostrophe retiré."""
+    return "".join(c for c in w.lower() if c.isalnum() or c in "'’").replace("’", "'")
+
+
+def _vue(b):
+    return {"rush": b["rush"], "debut": b["debut"], "fin": b["fin"]}
+
+
+def _avec_hote(seq, prop):
+    """Une seule place pose `hote` : le bloc d'accueil au moment de la proposition."""
+    a = prop["apres"]
+    if a >= 0:
+        prop["hote"] = _vue(seq[a])
+    else:
+        prop["hote"] = _vue(seq[0]) if seq else None
+    return prop
+
+
+def _milieu_trou(ms, i):
+    """Milieu du trou entre le mot i-1 et le mot i."""
+    return (ms[i - 1]["e"] + ms[i]["s"]) / 2
+
+
+def reprise(root, seq, bloc):
+    """Cas A : le bloc répète au moins 4 mots d'un bloc de la séquence, dans ses 8 premiers mots."""
+    nm = mots_du_bloc(root, bloc)
+    nn = [normaliser(m["w"]) for m in nm]
+    n = len(nm)
+    hotes = [mots_du_bloc(root, b) for b in seq]
+    hn = [[normaliser(m["w"]) for m in h] for h in hotes]
+    best = None  # (longueur, j, m, -k)
+    for k in range(0, min(8, n) - 3):
+        for j, h in enumerate(hn):
+            for m in range(len(h)):
+                L = 0
+                while (
+                    k + L < n
+                    and m + L < len(h)
+                    and nn[k + L]
+                    and nn[k + L] == h[m + L]
+                ):
+                    L += 1
+                if L >= 4 and (best is None or (L, j, m, -k) > best[0]):
+                    best = ((L, j, m, -k), L, j, m, k)
+    if best is None:
+        return None
+    _, L, j, m, k = best
+    passage = " ".join(x["w"] for x in nm[k : k + L])
+    fin_dup = k + L  # premier mot neuf du bloc
+    if fin_dup >= n:
+        raise ErreurProjet(f"rien de neuf dans ce bloc : il répète « {passage} »")
+    h = hotes[j]
+    couper_a = None if m + L >= len(h) else _milieu_trou(h, m + L)
+    prop = {
+        "bloc": {
+            "rush": bloc["rush"],
+            "debut": round(_milieu_trou(nm, fin_dup), 3),
+            "fin": bloc["fin"],
+        },
+        "apres": j,
+        "couper_a": None if couper_a is None else round(couper_a, 3),
+        "raison": f"reprend « {passage} » : placé juste après, doublon retiré",
+        "cas": "A",
+    }
+    return _avec_hote(seq, prop)
+
+
+def _prompt_llm(root, seq, bloc):
+    def lignes(b):
+        return " ".join(f"{i}:{m['w']}" for i, m in enumerate(mots_du_bloc(root, b)))
+
+    blocs_txt = "\n".join(f"[{k}] {lignes(b)}" for k, b in enumerate(seq))
+    return (
+        "Tu aides à monter une vidéo parlée en français. La séquence actuelle est une liste "
+        "de blocs numérotés ; dans chaque bloc les mots sont numérotés (n:mot).\n\n"
+        f"SÉQUENCE :\n{blocs_txt}\n\n"
+        f"BLOC À PLACER (une prise refaite) :\n{lignes(bloc)}\n\n"
+        "Où ce bloc va-t-il, dans le fil du discours ? Réponds par UN SEUL objet JSON, rien "
+        'd\'autre : {"apres": <numéro du bloc de la séquence après lequel il va, -1 pour tout au '
+        'début>, "couper_a_mot": <numéro d\'un mot DU BLOC « apres » : ce bloc est coupé juste '
+        "avant ce mot et le nouveau bloc passe entre les deux moitiés ; null pour ne rien couper>, "
+        '"raison": "<une phrase>"}'
+    )
+
+
+def placer_llm(root, seq, bloc):
+    """Cas B : le LLM dit où va le bloc. Rien n'est appliqué ici."""
+    import llm
+
+    if not seq:
+        return _avec_hote(
+            seq,
+            {"bloc": _vue(bloc), "apres": -1, "couper_a": None,
+             "raison": "la séquence est vide", "cas": "B"},
+        )
+    try:
+        brut, _ = llm.complete(_prompt_llm(root, seq, bloc))
+    except (llm.NoLLM, RuntimeError) as e:
+        raise ErreurProjet(str(e)) from None
+    m = re.search(r"\{.*\}", brut, re.S)
+    try:
+        r = json.loads(m.group(0)) if m else None
+        apres = r["apres"]
+        mot = r.get("couper_a_mot")
+    except (ValueError, KeyError, AttributeError, TypeError):
+        raise ErreurProjet(f"réponse LLM illisible : {brut.strip()[:200]}") from None
+    if isinstance(apres, bool) or not isinstance(apres, int) or not -1 <= apres < len(seq):
+        raise ErreurProjet(f"réponse LLM hors séquence : apres={apres}")
+    couper_a = None
+    if mot is not None:
+        hm = mots_du_bloc(root, seq[apres]) if apres >= 0 else []
+        if isinstance(mot, bool) or not isinstance(mot, int) or not 1 <= mot <= len(hm) - 1:
+            raise ErreurProjet(f"réponse LLM hors séquence : couper_a_mot={mot}")
+        couper_a = round(_milieu_trou(hm, mot), 3)
+    prop = {
+        "bloc": _vue(bloc),
+        "apres": apres,
+        "couper_a": couper_a,
+        "raison": str(r.get("raison") or "").strip() or "proposé par le LLM",
+        "cas": "B",
+    }
+    return _avec_hote(seq, prop)
+
+
+def calculer_proposition(root, p, bloc):
+    """A d'abord, sinon B. Ne touche à aucun fichier."""
+    seq = p.get("sequence", [])
+    prop = reprise(root, seq, bloc)
+    return prop if prop is not None else placer_llm(root, seq, bloc)
+
+
+def ajouter_proposition(root, nom, prop):
+    p = charger(root, nom)
+    p.setdefault("propositions", []).append(prop)
+    ecrire(root, nom, p)
+    return p
+
+
+def _proposition(p, k):
+    props = p.get("propositions", [])
+    if not isinstance(k, int) or not 0 <= k < len(props):
+        raise ErreurProjet(f"proposition inconnue : {k}")
+    return props[k]
+
+
+def _meme(a, b):
+    return (
+        a is not None
+        and b is not None
+        and a["rush"] == b["rush"]
+        and abs(a["debut"] - b["debut"]) < 1e-3
+        and abs(a["fin"] - b["fin"]) < 1e-3
+    )
+
+
+def accepter(root, nom, k):
+    p = charger(root, nom)
+    prop = _proposition(p, k)
+    seq, apres, hote = p["sequence"], prop["apres"], prop.get("hote")
+    if apres >= 0:
+        ok = apres < len(seq) and _meme(seq[apres], hote)
+    else:
+        ok = (not seq and hote is None) or (bool(seq) and _meme(seq[0], hote))
+    if not ok:
+        raise ErreurProjet("proposition périmée : la séquence a changé, relance Placer")
+    if prop["couper_a"] is not None:
+        seq = couper(root, seq, apres, prop["couper_a"])
+    nv = valider(root, p, inserer(seq, apres, prop["bloc"]))
+    p["sequence"] = nv
+    p["propositions"] = [x for i, x in enumerate(p["propositions"]) if i != k]
+    ecrire(root, nom, p)
+    return p
+
+
+def refuser(root, nom, k):
+    p = charger(root, nom)
+    _proposition(p, k)
+    p["propositions"] = [x for i, x in enumerate(p["propositions"]) if i != k]
+    ecrire(root, nom, p)
+    return p
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -349,6 +537,20 @@ def main(argv):
             ajouter(root, nom, rest[0])
         elif cmd == "kind":
             print(genre(root, charger(root, nom)))
+        elif cmd == "placer":
+            stem, debut, fin = rest[0], float(rest[1]), float(rest[2])
+            p = charger(root, nom)
+            if stem not in p["rushs"]:
+                raise ErreurProjet(f"rush inconnu : {stem}")
+            ms = mots(root, stem)
+            bloc = {"rush": stem, "debut": caler(debut, ms), "fin": caler(fin, ms)}
+            prop = calculer_proposition(root, p, bloc)
+            ajouter_proposition(root, nom, prop)
+            print(json.dumps(prop, ensure_ascii=False))
+        elif cmd == "accepter":
+            accepter(root, nom, int(rest[0]))
+        elif cmd == "refuser":
+            refuser(root, nom, int(rest[0]))
         elif cmd == "montrer":
             for b in charger(root, nom)["sequence"]:
                 print(f"{b['rush']}\t{b['debut']}\t{b['fin']}\t{_texte(root, b)}")
