@@ -103,10 +103,23 @@ assert_contains "$(curl -s "$U/projet/data?p=essai")" '"propositions": []' "refu
 r=$(curl -s -X POST "$U/projet/render?p=essai")
 for _ in $(seq 1 90); do case "$(curl -s "$U/job?v=projet:essai")" in *'"running": false'*) break;; esac; sleep 1; done
 assert_contains "$(curl -s "$U/job?v=projet:essai")" '"running": false' "project render job ended"
+assert_contains "$(curl -s "$U/job?v=projet:essai")" '"ok": true' "project render job succeeded (not just ended)"
+assert_contains "$(curl -s "$U/projet/data?p=essai")" '"perime": false' "rendered project is not stale"
+curl -s -X POST "$U/projet/save?p=essai" -d "$B1" >/dev/null
+assert_contains "$(curl -s "$U/projet/data?p=essai")" '"perime": true' "a sequence edit after the render marks the result stale"
 case "$(curl -s "$U/videos")" in *projet:*) bad=1;; *) bad=0;; esac; assert_eq 0 "$bad" "/videos has no ghost rush after a project render"
 r=$(curl -s -w ' %{http_code}' -X POST "$U/upload?name=x.mov&projet=nope" -d 'x')
 assert_contains "$r" "projet inconnu" "upload into an unknown project"
 assert_contains "$r" "404" "upload into an unknown project: 404"
+# corps JSON inattendu, nom avec saut de ligne, projet abîmé, nom de fichier en _
+r=$(curl -s -w ' %{http_code}' -X POST "$U/projet/new" -d '[]'); assert_contains "$r" "400" "non-object JSON body: 400, not a dropped connection"
+r=$(curl -s -w ' %{http_code}' -X POST "$U/projet/new" -d '{"nom":"demo\n","rushs":[]}'); assert_contains "$r" "400" "project name with a trailing newline: 400"
+mkdir -p "$T/out/_projets/casse"; echo '{' > "$T/out/_projets/casse/projet.json"
+r="$(curl -s "$U/projets")"
+assert_contains "$r" '"nom": "essai"' "one broken project does not hide the others"
+assert_contains "$r" '"illisible": true' "the broken project is listed as unreadable"
+rm -rf "$T/out/_projets/casse"
+r=$(curl -s -w ' %{http_code}' -X POST "$U/upload?name=_x.mov" -d 'x'); assert_contains "$r" "400" "upload with a name starting with _: 400"
 # un rush parti : message français, le serveur répond toujours
 mv "$R" "$T/out/fixture-away"
 assert_contains "$(curl -s "$U/projet/data?p=essai")" "rush introuvable" "rush folder gone: French error"

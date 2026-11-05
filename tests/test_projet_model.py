@@ -702,5 +702,145 @@ class Rendu(Base):
         self.assertIn("rush introuvable : P2", str(c.exception))
 
 
+class Revue(Base):
+    """Corrections de la revue finale."""
+
+    def test_nom_avec_saut_de_ligne_refuse(self):
+        with self.assertRaises(ErreurProjet):
+            projet.dossier(self.root, "demo\n")
+
+    def hote_et_neuf(self):
+        h = suite(1.0, [("le", 0), ("montage", 0.1), ("euh", 0.1), ("prend", 0.1), ("beaucoup", 0.1),
+                         ("de", 0.1), ("temps", 0.1), ("quand", 0.1), ("on", 0.1), ("filme.", 0.1)])
+        euh = h[2]
+        ecrire_rush(self.root, "HS", h, keep=[(0.0, euh[1]), (euh[2], 100.0)])
+        n = suite(1.0, [("alors", 0), ("le", 0.1), ("montage", 0.1), ("prend", 0.1), ("beaucoup", 0.1),
+                         ("zzz", 0.1), ("yyy", 0.1), ("xxx", 0.1), ("voilà.", 0.1)])
+        ecrire_rush(self.root, "NS", n, keep=[(0.0, 100.0)])
+        return h, projet.blocs(self.root, "HS"), projet.blocs(self.root, "NS")[0]
+
+    def test_cas_a_ignore_les_mots_barres_de_l_hote(self):
+        h, seq, bloc = self.hote_et_neuf()
+        pr = projet.reprise(self.root, seq, bloc)
+        self.assertIsNotNone(pr)
+        self.assertEqual(pr["cas"], "A")
+        ms = projet.mots(self.root, "HS")
+        # coupe juste après « beaucoup » (index 4 dans le texte brut, « euh » barré en 2) : trou beaucoup|de
+        self.assertAlmostEqual(pr["couper_a"], (ms[4]["e"] + ms[5]["s"]) / 2, places=3)
+
+    def test_accepter_refuse_un_passage_deja_dans_la_sequence(self):
+        projet.nouveau(self.root, "demo", ["prise un", "P2"])
+        p = projet.charger(self.root, "demo")
+        b = projet.blocs(self.root, "P2")[1]
+        prop = {"bloc": b, "apres": 0, "couper_a": None, "raison": "t", "cas": "B"}
+        projet._avec_hote(p["sequence"], prop)
+        projet.ajouter_proposition(self.root, "demo", prop)
+        p = projet.charger(self.root, "demo")
+        p["sequence"] = p["sequence"] + [b]  # glissé à la main après Placer
+        projet.ecrire(self.root, "demo", p)
+        avant = projet.charger(self.root, "demo")
+        with self.assertRaises(ErreurProjet) as c:
+            projet.accepter(self.root, "demo", 0)
+        self.assertIn("déjà dans la séquence", str(c.exception))
+        self.assertEqual(projet.charger(self.root, "demo"), avant)
+
+    def test_verrou_serialise_les_ecritures(self):
+        import threading, time as _t
+
+        projet.nouveau(self.root, "demo", ["prise un"])
+        fini = threading.Event()
+        def ajoute():
+            projet.ajouter(self.root, "demo", "P2"); fini.set()
+        with projet.verrou(self.root, "demo"):
+            th = threading.Thread(target=ajoute); th.start()
+            _t.sleep(0.4)
+            self.assertFalse(fini.is_set(), "ajouter ne doit pas passer pendant qu'on tient le verrou")
+        th.join(5)
+        self.assertTrue(fini.is_set())
+        self.assertEqual(projet.charger(self.root, "demo")["rushs"], ["prise un", "P2"])
+
+    def test_enregistrer_sequence(self):
+        projet.nouveau(self.root, "demo", ["prise un"])
+        seq = projet.blocs(self.root, "prise un")[:1]
+        p = projet.enregistrer_sequence(self.root, "demo", seq)
+        self.assertEqual(p["sequence"], projet.charger(self.root, "demo")["sequence"])
+        with self.assertRaises(ErreurProjet):
+            projet.enregistrer_sequence(self.root, "demo", [{"rush": "zzz", "debut": 0, "fin": 1}])
+
+
+def ffm(args):
+    subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y"] + args, check=True)
+
+
+class RenduReel(Base):
+    """Rendu réel (ffmpeg) : garde de durée et sorties."""
+
+    def rush_media(self, stem, size, fps, n, wd, pas, freq=440):
+        """n mots de wd secondes tous les `pas` s, keep = un mot par plage. À 30 i/s, pas = 12 images et
+        wd = 6,4 images : cut.sh arrondit chaque plage à 6 images, soit 0,4 image perdue à chaque plage."""
+        m = [(f"m{i}.", round(0.5 + i * pas, 4), round(0.5 + i * pas + wd, 4)) for i in range(n)]
+        dur = m[-1][2] + 0.5
+        ecrire_rush(self.root, stem, m, keep=[(a, b) for _, a, b in m],
+                    silences=[(m[i][2], m[i + 1][1]) for i in range(n - 1)])
+        src = os.path.join(self.root, stem, stem + ".mov")
+        ffm(["-f", "lavfi", "-i", f"color=c=blue:s={size}:r={fps}:d={dur}", "-f", "lavfi", "-i",
+             f"sine=frequency={freq}:duration={dur}", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", src])
+        return m
+
+    def projet_xyx(self, n=150):
+        self.rush_media("RX", "180x320", 30, n, 0.21333, 0.4)
+        self.rush_media("RY", "180x320", 30, 20, 0.21333, 0.4, 330)
+        p = projet.nouveau(self.root, "gros", ["RX", "RY"])
+        # un seul bloc par rush (pas de coupe de paragraphe) : la séquence est X (moitié), Y, X (reste)
+        bx = projet.blocs(self.root, "RX")
+        by = projet.blocs(self.root, "RY")
+        ms = projet.mots(self.root, "RX")
+        milieu = (ms[n // 2]["e"] + ms[n // 2 + 1]["s"]) / 2
+        deux = projet.couper(self.root, bx, 0, milieu)
+        p["sequence"] = [deux[0], by[0], deux[1]]
+        projet.ecrire(self.root, "gros", p)
+        return p
+
+    def test_garde_de_duree_sur_beaucoup_de_plages(self):
+        self.projet_xyx()
+        # le fixture doit exercer le défaut : l'ancienne formule (plages brutes) s'écarte de plus de 0,25 s
+        res = projet.resume(self.root, "gros")
+        sortie = projet.rendre(self.root, "gros")
+        reel = projet._sonde(sortie)["duree"]
+        ancien = res["total"] - projet.FONDU * res["fondus"]
+        self.assertGreater(abs(reel - ancien), 0.25, "le fixture ne reproduit pas l'arrondi image de cut.sh")
+
+    def test_rendu_refuse_laisse_l_ancien_resultat(self):
+        self.projet_xyx(30)
+        d = projet.dossier(self.root, "gros")
+        os.makedirs(d, exist_ok=True)
+        out = os.path.join(d, "gros.derush.mp4")
+        for f in ("gros.derush.mp4", "gros.fcpxml", "cuts.md"):
+            open(os.path.join(d, f), "w").write("ANCIEN")
+        with mock.patch("projet.duree_attendue", return_value=999.0):
+            with self.assertRaises(ErreurProjet) as c:
+                projet.rendre(self.root, "gros")
+        self.assertIn("GARDE", str(c.exception))
+        for f in ("gros.derush.mp4", "gros.fcpxml", "cuts.md"):
+            self.assertEqual(open(os.path.join(d, f)).read(), "ANCIEN", f)
+        self.assertEqual([x for x in os.listdir(os.path.join(d, "_work")) if x.startswith("run-")], [])
+
+    def test_rendu_ne_relit_pas_projet_json(self):
+        self.projet_xyx(30)
+        with mock.patch("projet.resume", side_effect=AssertionError("relu")):
+            projet.rendre(self.root, "gros")
+
+    def test_format_du_premier_rush_pas_du_premier_bloc(self):
+        self.rush_media("RX", "180x320", 30, 12, 0.21333, 0.4)
+        self.rush_media("RY", "90x160", 25, 12, 0.21333, 0.4, 330)
+        p = projet.nouveau(self.root, "fmt", ["RX", "RY"])
+        p["sequence"] = [projet.blocs(self.root, "RY")[0], projet.blocs(self.root, "RX")[0]]
+        projet.ecrire(self.root, "fmt", p)
+        sortie = projet.rendre(self.root, "fmt")
+        w = projet._sonde(sortie)
+        self.assertEqual((w["w"], w["h"]), (180, 320))
+
+
 if __name__ == "__main__":
     unittest.main()

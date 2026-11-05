@@ -93,6 +93,33 @@ class TestFcpxml(unittest.TestCase):
         self.assertIn('offset="13/10s"', x)
         self.assertIn('duration="9/5s"', x)  # 0.5 + 0.8 + 0.5
 
+    def test_multi_offsets_sur_la_grille_de_la_sequence(self):
+        from fractions import Fraction
+        import re
+        clips = os.path.join(self.tmp.name, "clips.json")
+        json.dump([
+            {"source": self.b, "start": 1.0, "end": 1.5},   # 25 i/s : 13 images = 0,52 s, pas multiple de 1/30
+            {"source": self.a, "start": 0.5, "end": 1.0},
+            {"source": self.b, "start": 2.0, "end": 2.5},
+        ], open(clips, "w"))
+        self.assertEqual(self.lancer("--multi", clips, self.out, "proj").returncode, 0)
+        x = open(self.out).read()
+        # la séquence suit la 1re source : ici b à 25 i/s, grille 1/25 ; on prend une séquence a d'abord
+        json.dump([
+            {"source": self.a, "start": 0.5, "end": 1.0},
+            {"source": self.b, "start": 1.0, "end": 1.5},
+            {"source": self.a, "start": 2.0, "end": 2.5},
+            {"source": self.b, "start": 2.0, "end": 2.5},
+        ], open(clips, "w"))
+        self.assertEqual(self.lancer("--multi", clips, self.out, "proj").returncode, 0)
+        x = open(self.out).read()
+        def fr(v):
+            n, _, d = v.rstrip("s").partition("/")
+            return Fraction(int(n), int(d or 1))
+        for attr in ("offset", "duration"):
+            for v in re.findall(r'<asset-clip [^>]*?' + attr + r'="([^"]+)"', x):
+                self.assertEqual((fr(v) * 30).denominator, 1, f"{attr}={v} hors grille 1/30")
+
     def test_multi_audio_refuse(self):
         clips = os.path.join(self.tmp.name, "clips.json")
         json.dump([{"source": self.m, "start": 0.0, "end": 1.0}], open(clips, "w"))

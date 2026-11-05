@@ -19,6 +19,8 @@ Usage (root = $DERUSH_OUT_ROOT) :
 Les erreurs sortent en français sur stderr, code 1, sans traceback.
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -29,7 +31,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 FONDU = 0.2
-NOM_RE = re.compile(r"^[\w-]+$")
+NOM_RE = re.compile(r"^[\w-]+\Z")  # \Z et non $ : « demo\n » ne passe pas
 MARGE_BORD = 0.25  # avant le premier mot, après le dernier mot
 FIN_PHRASE = (".", "?", "!")
 
@@ -98,6 +100,21 @@ def ecrire(root, nom, p):
     with open(tmp, "w") as f:
         json.dump(p, f, ensure_ascii=False, indent=1)
     os.replace(tmp, os.path.join(d, "projet.json"))
+
+
+@contextlib.contextmanager
+def verrou(root, nom):
+    """Verrou de fichier (flock) : tout load-modify-write de projet.json le prend, CLI et studio compris.
+    Le fichier vit à côté du dossier du projet (`_projets/.<nom>.lock`), pas dedans."""
+    dossier(root, nom)
+    base = os.path.join(root, "_projets")
+    os.makedirs(base, exist_ok=True)
+    with open(os.path.join(base, f".{nom}.lock"), "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 # ---------------------------------------------------------------- mots et blocs
@@ -295,6 +312,11 @@ def _refuser_melange(stem, kind, kind_projet):
 
 
 def nouveau(root, nom, stems):
+    with verrou(root, nom):
+        return _nouveau(root, nom, stems)
+
+
+def _nouveau(root, nom, stems):
     d = dossier(root, nom)
     if os.path.isfile(os.path.join(d, "projet.json")):
         raise ErreurProjet(f"le projet {nom} existe déjà")
@@ -320,6 +342,11 @@ def nouveau(root, nom, stems):
 
 
 def ajouter(root, nom, stem):
+    with verrou(root, nom):
+        return _ajouter(root, nom, stem)
+
+
+def _ajouter(root, nom, stem):
     p = charger(root, nom)
     if stem in p["rushs"]:
         return p
@@ -331,6 +358,15 @@ def ajouter(root, nom, stem):
         p["sequence"] = blocs(root, stem)
     ecrire(root, nom, p)
     return p
+
+
+def enregistrer_sequence(root, nom, sequence):
+    """Valide puis range la séquence, sous verrou."""
+    with verrou(root, nom):
+        p = charger(root, nom)
+        p["sequence"] = valider(root, p, sequence)
+        ecrire(root, nom, p)
+        return p
 
 
 def genre(root, p):
@@ -365,12 +401,16 @@ def _milieu_trou(ms, i):
 
 
 def reprise(root, seq, bloc):
-    """Cas A : le bloc répète au moins 4 mots d'un bloc de la séquence, dans ses 8 premiers mots."""
+    """Cas A : le bloc répète au moins 4 mots d'un bloc de la séquence, dans ses 8 premiers mots.
+    La comparaison porte sur les mots GARDÉS (un « euh » barré par le montage du rush n'est pas dit
+    dans le rendu) ; les index d'origine servent à placer les coupes."""
     nm = mots_du_bloc(root, bloc)
-    nn = [normaliser(m["w"]) for m in nm]
-    n = len(nm)
+    ni = [i for i, m in enumerate(nm) if m["garde"]]
+    nn = [normaliser(nm[i]["w"]) for i in ni]
+    n = len(nn)
     hotes = [mots_du_bloc(root, b) for b in seq]
-    hn = [[normaliser(m["w"]) for m in h] for h in hotes]
+    hi = [[i for i, m in enumerate(h) if m["garde"]] for h in hotes]
+    hn = [[normaliser(h[i]["w"]) for i in idx] for h, idx in zip(hotes, hi)]
     best = None  # (longueur, j, m, -k)
     for k in range(0, min(8, n) - 3):
         for j, h in enumerate(hn):
@@ -388,16 +428,17 @@ def reprise(root, seq, bloc):
     if best is None:
         return None
     _, L, j, m, k = best
-    passage = " ".join(x["w"] for x in nm[k : k + L])
-    fin_dup = k + L  # premier mot neuf du bloc
-    if fin_dup >= n:
+    passage = " ".join(nm[i]["w"] for i in ni[k : k + L])
+    if k + L >= n:
         raise ErreurProjet(f"rien de neuf dans ce bloc : il répète « {passage} »")
+    dup_fin = ni[k + L - 1]  # dernier mot répété, index d'origine
     h = hotes[j]
-    couper_a = None if m + L >= len(h) else _milieu_trou(h, m + L)
+    he = hi[j][m + L - 1]
+    couper_a = None if he + 1 >= len(h) else _milieu_trou(h, he + 1)
     prop = {
         "bloc": {
             "rush": bloc["rush"],
-            "debut": round(_milieu_trou(nm, fin_dup), 3),
+            "debut": round(_milieu_trou(nm, dup_fin + 1), 3),
             "fin": bloc["fin"],
         },
         "apres": j,
@@ -473,10 +514,11 @@ def calculer_proposition(root, p, bloc):
 
 
 def ajouter_proposition(root, nom, prop):
-    p = charger(root, nom)
-    p.setdefault("propositions", []).append(prop)
-    ecrire(root, nom, p)
-    return p
+    with verrou(root, nom):
+        p = charger(root, nom)
+        p.setdefault("propositions", []).append(prop)
+        ecrire(root, nom, p)
+        return p
 
 
 def _proposition(p, k):
@@ -497,30 +539,36 @@ def _meme(a, b):
 
 
 def accepter(root, nom, k):
-    p = charger(root, nom)
-    prop = _proposition(p, k)
-    seq, apres, hote = p["sequence"], prop["apres"], prop.get("hote")
-    if apres >= 0:
-        ok = apres < len(seq) and _meme(seq[apres], hote)
-    else:
-        ok = (not seq and hote is None) or (bool(seq) and _meme(seq[0], hote))
-    if not ok:
-        raise ErreurProjet("proposition périmée : la séquence a changé, relance Placer")
-    if prop["couper_a"] is not None:
-        seq = couper(root, seq, apres, prop["couper_a"])
-    nv = valider(root, p, inserer(seq, apres, prop["bloc"]))
-    p["sequence"] = nv
-    p["propositions"] = [x for i, x in enumerate(p["propositions"]) if i != k]
-    ecrire(root, nom, p)
-    return p
+    with verrou(root, nom):
+        p = charger(root, nom)
+        prop = _proposition(p, k)
+        seq, apres, hote = p["sequence"], prop["apres"], prop.get("hote")
+        if apres >= 0:
+            ok = apres < len(seq) and _meme(seq[apres], hote)
+        else:
+            ok = (not seq and hote is None) or (bool(seq) and _meme(seq[0], hote))
+        if not ok:
+            raise ErreurProjet("proposition périmée : la séquence a changé, relance Placer")
+        b = prop["bloc"]
+        if any(x["rush"] == b["rush"] and min(x["fin"], b["fin"]) - max(x["debut"], b["debut"]) > 1e-3 for x in seq):
+            raise ErreurProjet(
+                "ce passage est déjà dans la séquence : retire-le d'abord, ou refuse la proposition"
+            )
+        if prop["couper_a"] is not None:
+            seq = couper(root, seq, apres, prop["couper_a"])
+        p["sequence"] = valider(root, p, inserer(seq, apres, b))
+        p["propositions"] = [x for i, x in enumerate(p["propositions"]) if i != k]
+        ecrire(root, nom, p)
+        return p
 
 
 def refuser(root, nom, k):
-    p = charger(root, nom)
-    _proposition(p, k)
-    p["propositions"] = [x for i, x in enumerate(p["propositions"]) if i != k]
-    ecrire(root, nom, p)
-    return p
+    with verrou(root, nom):
+        p = charger(root, nom)
+        _proposition(p, k)
+        p["propositions"] = [x for i, x in enumerate(p["propositions"]) if i != k]
+        ecrire(root, nom, p)
+        return p
 
 
 # ---------------------------------------------------------------- plan de rendu
@@ -683,6 +731,10 @@ def mots_dans_fondu(root, runs):
 def resume(root, nom):
     p = charger(root, nom)
     runs, vides = plan_rendu(root, p)
+    return _resume(p, runs, vides)
+
+
+def _resume(p, runs, vides):
     return {
         "total": round(sum(z - a for r in runs for a, z in r["plages"]), 3),
         "fondus": max(0, len(runs) - 1),
@@ -735,9 +787,8 @@ def _ffmpeg(args):
         raise ErreurProjet(f"ffmpeg en échec : {r.stderr.strip()[-400:]}")
 
 
-def _chaine(runs, fichiers, infos, audio):
+def _chaine(runs, fichiers, infos, audio, t0):
     """Graphe ffmpeg : chaque run normalisé au format du premier, puis xfade / acrossfade de 0,2 s."""
-    t0 = infos[0]
     lignes = []
     n = len(runs)
     for i in range(n):
@@ -768,8 +819,16 @@ def _chaine(runs, fichiers, infos, audio):
     return ";\n".join(lignes), (None if audio else f"x{n - 1}"), prec
 
 
+def duree_attendue(infos, audio):
+    """Durée du montage d'après les runs RÉELLEMENT coupés (cut.sh cale chaque plage sur la grille d'images
+    de sa source : la somme des plages brutes dérive de plus de 0,25 s sur un vrai rush à 100 coupes)."""
+    return sum(i["duree"] if audio else i["vduree"] for i in infos) - FONDU * (len(infos) - 1)
+
+
 def rendre(root, nom):
-    """Monte le projet : <nom>.derush.mp4|m4a, <nom>.fcpxml (vidéo), cuts.md. Renvoie le chemin."""
+    """Monte le projet : <nom>.derush.mp4|m4a, <nom>.fcpxml (vidéo), cuts.md. Renvoie le chemin.
+    Rien n'est écrit dans les sorties tant que la garde de durée n'a pas passé : un rendu refusé laisse
+    le résultat précédent intact."""
     p = charger(root, nom)
     runs, vides = plan_rendu(root, p)
     if not runs:
@@ -781,61 +840,67 @@ def rendre(root, nom):
     for r in runs:
         if (r["kind"] == "audio") != audio:
             raise ErreurProjet(f"{r['rush']} n'est pas du même genre que le projet")
+    res = _resume(p, runs, vides)  # depuis le plan en main : projet.json peut changer pendant le montage
     d = dossier(root, nom)
     work = os.path.join(d, "_work")
     os.makedirs(work, exist_ok=True)
     ext = "m4a" if audio else "mp4"
     sortie = os.path.join(d, f"{nom}.derush.{ext}")
+    tmp = os.path.join(work, f"{nom}.tmp.{ext}")
     cut = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "cut.sh")
     env = dict(os.environ, AUDIO_ONLY="1" if audio else "0")
     fichiers = []
-    for k, r in enumerate(runs):
-        rj = os.path.join(work, f"run-{k}.json")
-        json.dump([{"start": a, "end": z} for a, z in r["plages"]], open(rj, "w"))
-        fo = os.path.join(work, f"run-{k}.{ext}")
-        c = subprocess.run(["bash", cut, r["source"], rj, fo], capture_output=True, text=True, env=env)
-        if c.returncode != 0 or not os.path.isfile(fo):
-            raise ErreurProjet(f"{r['rush']} ne se coupe pas : {(c.stderr or c.stdout).strip()[-300:]}")
-        fichiers.append(fo)
-    infos = [_sonde(f) for f in fichiers]
-    if len(runs) == 1:
-        os.replace(fichiers[0], sortie)
-    else:
-        graphe, vlab, alab = _chaine(runs, fichiers, infos, audio)
-        gp = os.path.join(work, "graph.txt")
-        open(gp, "w").write(graphe)
-        args = []
-        for f in fichiers:
-            args += ["-i", f]
-        args += ["-/filter_complex", gp]
-        if audio:
-            args += ["-map", f"[{alab}]", "-c:a", "aac", "-b:a", "192k"]
+    try:
+        for k, r in enumerate(runs):
+            rj = os.path.join(work, f"run-{k}.json")
+            json.dump([{"start": a, "end": z} for a, z in r["plages"]], open(rj, "w"))
+            fo = os.path.join(work, f"run-{k}.{ext}")
+            fichiers.append(fo)
+            c = subprocess.run(["bash", cut, r["source"], rj, fo], capture_output=True, text=True, env=env)
+            if c.returncode != 0 or not os.path.isfile(fo):
+                raise ErreurProjet(f"{r['rush']} ne se coupe pas : {(c.stderr or c.stdout).strip()[-300:]}")
+        infos = [_sonde(f) for f in fichiers]
+        # le format de sortie est celui du PREMIER RUSH du projet (spec), pas du premier bloc de la séquence
+        premier = p["rushs"][0] if p.get("rushs") else None
+        t0 = infos[next((k for k, r in enumerate(runs) if r["rush"] == premier), 0)]
+        if len(runs) == 1:
+            os.replace(fichiers[0], tmp)
         else:
-            args += ["-map", f"[{vlab}]", "-map", f"[{alab}]", "-c:v", "libx264", "-preset", "fast",
-                     "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
-        _ffmpeg(args + ["-movflags", "+faststart", sortie])
-    res = resume(root, nom)
-    attendu = res["total"] - FONDU * res["fondus"]
-    reel = _sonde(sortie)["duree"]
-    if abs(reel - attendu) > 0.25:
-        raise ErreurProjet(f"GARDE : durée {reel:.2f} s, attendu {attendu:.2f} s (±0,25)")
-    if not audio:
-        import fcpxml
+            graphe, vlab, alab = _chaine(runs, fichiers, infos, audio, t0)
+            gp = os.path.join(work, "graph.txt")
+            open(gp, "w").write(graphe)
+            args = []
+            for f in fichiers:
+                args += ["-i", f]
+            args += ["-/filter_complex", gp]
+            if audio:
+                args += ["-map", f"[{alab}]", "-c:a", "aac", "-b:a", "192k"]
+            else:
+                args += ["-map", f"[{vlab}]", "-map", f"[{alab}]", "-c:v", "libx264", "-preset", "fast",
+                         "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
+            _ffmpeg(args + ["-movflags", "+faststart", tmp])
+        attendu = duree_attendue(infos, audio)
+        reel = _sonde(tmp)["duree"]
+        if abs(reel - attendu) > 0.25:
+            raise ErreurProjet(f"GARDE : durée {reel:.2f} s, attendu {attendu:.2f} s (±0,25)")
+        if not audio:
+            import fcpxml
 
-        fcpxml.build(
-            [(r["source"], a, z) for r in runs for a, z in r["plages"]],
-            os.path.join(d, f"{nom}.fcpxml"),
-            nom,
-        )
-    _cuts_md(root, nom, p, runs, vides, infos, audio, res)
-    for k in range(len(fichiers)):
-        for f in (os.path.join(work, f"run-{k}.{ext}"), os.path.join(work, f"run-{k}.json")):
+            fcpxml.build(
+                [(r["source"], a, z) for r in runs for a, z in r["plages"]],
+                os.path.join(d, f"{nom}.fcpxml"),
+                nom,
+            )
+        _cuts_md(root, nom, p, runs, vides, infos, audio, res, t0)
+        os.replace(tmp, sortie)
+    finally:
+        for f in fichiers + [tmp] + [os.path.join(work, f"run-{k}.json") for k in range(len(runs))]:
             if os.path.exists(f):
                 os.remove(f)
     return sortie
 
 
-def _cuts_md(root, nom, p, runs, vides, infos, audio, res):
+def _cuts_md(root, nom, p, runs, vides, infos, audio, res, t0):
     seq = p["sequence"]
     L = [f"# {nom} : projet", "", f"Monté le {time.strftime('%Y-%m-%d %H:%M')}.", "", "## Blocs", ""]
     for i, b in enumerate(seq):
@@ -862,7 +927,6 @@ def _cuts_md(root, nom, p, runs, vides, infos, audio, res):
     if vides:
         L += [f"{len(vides)} bloc(s) vide(s) ignoré(s) (voir la liste des blocs).", ""]
     if not audio:
-        t0 = infos[0]
         for r, inf in zip(runs, infos):
             if (inf["w"], inf["h"], inf["fps"]) != (t0["w"], t0["h"], t0["fps"]) or inf["rate"] != t0["rate"]:
                 L.append(

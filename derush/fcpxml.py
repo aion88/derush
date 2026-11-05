@@ -112,7 +112,9 @@ def build(clips, out, name):
         s, e = round(s0 * sfps), round(e0 * sfps)
         if e <= s:
             continue
-        d = Fraction(e - s) / sfps
+        # la durée vue par la SÉQUENCE tombe sur sa grille d'images (r1) : un rush à 25 i/s dans une
+        # séquence à 30 i/s ne doit pas décaler les offsets suivants entre deux images
+        d = Fraction(round(Fraction(e - s) / sfps * fps)) / fps
         lignes_clips.append(
             f'            <asset-clip ref="{aid}" name={quoteattr(name)} offset="{ts(off)}" '
             f'start="{t(s, sfps)}" duration="{ts(d)}" tcFormat="NDF"/>'

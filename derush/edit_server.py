@@ -17,6 +17,7 @@ import projet  # noqa: E402
 from projet import ErreurProjet  # noqa: E402
 TAG = "barré dans l'éditeur"
 JOBS = {}  # stem -> {"proc", "kind", "log"} ; un montage de projet a la clé "projet:<nom>"
+RUSH_PRIS = {}  # clé de job projet -> rushs que ce montage rend d'abord (un rush ne se rend pas deux fois en même temps)
 PLOCK = threading.Lock()  # un seul load-modify-write de projet.json à la fois (jamais tenu pendant le LLM)
 STEPS = {
     "prep": "derush : silences, euh, transcription, alignement",
@@ -255,9 +256,19 @@ def pnom(q):
     return nom
 
 
+def occupes():
+    """Rush -> clé du montage de projet en cours qui le rend."""
+    return {
+        st: k
+        for k, stems in RUSH_PRIS.items()
+        if JOBS.get(k) and JOBS[k]["proc"].poll() is None
+        for st in stems
+    }
+
+
 def perr_code(e):
     m = str(e)
-    if "existe déjà" in m:
+    if "existe déjà" in m or "en cours" in m:
         return 409
     if m.startswith(("projet inconnu", "rush inconnu", "rush introuvable")):
         return 404
@@ -295,19 +306,25 @@ def projets():
         f = os.path.join(base, nom, "projet.json")
         if not os.path.isfile(f) or not projet.NOM_RE.match(nom):
             continue
-        p = projet.charger(RUSHS, nom)
-        out.append(
-            {
-                "nom": nom,
-                "rushs": len(p["rushs"]),
-                "blocs": len(p["sequence"]),
-                "propositions": len(p.get("propositions", [])),
-                "rendu": projet_sortie(nom) is not None,
-                "kind": projet.genre(RUSHS, p),
-                "mtime": os.path.getmtime(f),
-                "job": pjob(nom),
-            }
-        )
+        try:
+            p = projet.charger(RUSHS, nom)
+            out.append(
+                {
+                    "nom": nom,
+                    "rushs": len(p["rushs"]),
+                    "blocs": len(p["sequence"]),
+                    "propositions": len(p.get("propositions", [])),
+                    "rendu": projet_sortie(nom) is not None,
+                    "kind": projet.genre(RUSHS, p),
+                    "mtime": os.path.getmtime(f),
+                    "job": pjob(nom),
+                }
+            )
+        except (ValueError, KeyError, OSError):  # un projet abîmé ne cache pas les autres
+            out.append(
+                {"nom": nom, "illisible": True, "rushs": 0, "blocs": 0, "propositions": 0,
+                 "rendu": False, "kind": "video", "mtime": os.path.getmtime(f), "job": {}}
+            )
     return sorted(out, key=lambda x: -x["mtime"])
 
 
@@ -334,13 +351,22 @@ def projet_data(nom):
         "sequence": [pvue(b) for b in p["sequence"]],
         "propositions": [dict(x, bloc=pvue(x["bloc"])) for x in p.get("propositions", [])],
         "rendu": projet_sortie(nom) is not None,
+        "perime": perime(nom),
         "job": pjob(nom),
     }
+
+
+def perime(nom):
+    """Vrai si la séquence a changé depuis le dernier montage (le résultat affiché n'est plus le bon)."""
+    f = projet_sortie(nom)
+    return bool(f) and os.path.getmtime(os.path.join(projet.dossier(RUSHS, nom), "projet.json")) > os.path.getmtime(f)
 
 
 def projet_post(path, q, raw):
     """Les routes POST /projet*, avant tout `v=` : renvoie (objet JSON, code)."""
     body = json.loads(raw.decode() or "{}") if raw else {}
+    if not isinstance(body, dict):
+        raise ErreurProjet("corps JSON invalide : un objet est attendu")
     if path == "/projet/new":
         with PLOCK:
             p = projet.nouveau(RUSHS, body.get("nom", ""), list(body.get("rushs", [])))
@@ -351,10 +377,7 @@ def projet_post(path, q, raw):
             return projet.ajouter(RUSHS, nom, body.get("rush", "")), 200
     if path == "/projet/save":
         with PLOCK:
-            p = projet.charger(RUSHS, nom)
-            p["sequence"] = projet.valider(RUSHS, p, body.get("sequence"))
-            projet.ecrire(RUSHS, nom, p)
-        return p, 200
+            return projet.enregistrer_sequence(RUSHS, nom, body.get("sequence")), 200
     if path == "/projet/placer":
         if "accepter" in body:
             with PLOCK:
@@ -372,8 +395,18 @@ def projet_post(path, q, raw):
         return prop, 200
     if path == "/projet/render":
         projet.charger(RUSHS, nom)
+        cle = f"projet:{nom}"
+        j = JOBS.get(cle)
+        if not (j and j["proc"].poll() is None):
+            stems = projet.a_rendre(RUSHS, nom)  # ces rushs-là se rendent d'abord : personne d'autre ne les rend en même temps
+            pris = occupes()
+            for st in stems:
+                autre = JOBS.get(st)
+                if st in pris or (autre and autre["proc"].poll() is None):
+                    raise ErreurProjet(f"le rush {st} est déjà en cours de traitement ({pris.get(st, 'un autre travail')})")
+            RUSH_PRIS[cle] = stems
         log = os.path.join(projet.dossier(RUSHS, nom), "_work", "job.log")
-        start_job(f"projet:{nom}", "projet", [[DERUSH, "projet", "render", nom]], log=log)
+        start_job(cle, "projet", [[DERUSH, "projet", "render", nom]], log=log)
         return pjob(nom), 200
     if path == "/projet/reveal":
         projet.charger(RUSHS, nom)
@@ -505,6 +538,8 @@ class H(BaseHTTPRequestHandler):
                 400,
             )
         stem = name.rsplit(".", 1)[0]
+        if stem.startswith(("_", ".")):  # safe_stem et projet.rush refusent ces noms : le rush serait inaccessible
+            return self._json({"error": "le nom du fichier ne peut pas commencer par _ ou ."}, 400)
         nom = q.get("projet")
         if nom:  # refusé avant de lire le corps : pas de gigaoctets pour rien
             try:
@@ -562,6 +597,8 @@ class H(BaseHTTPRequestHandler):
                 subprocess.run([os.environ.get("DERUSH_OPEN", "open"), "-R", t], capture_output=True)
                 return self._json({"path": t})
             if path == "/render":
+                if stem in occupes():
+                    return self._json({"error": f"le rush {stem} est en cours de rendu par {occupes()[stem]}"}, 409)
                 start_job(stem, "render", [[DERUSH, "render", stem]])
                 return self._json(job_state(stem))
             if path == "/propose":

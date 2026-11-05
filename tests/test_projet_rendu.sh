@@ -61,6 +61,16 @@ assert_eq "1080,1920,30/1" "$(ffprobe -v error -select_streams v:0 -show_entries
 LUFS="$(ffmpeg -nostdin -i "$RL" -af "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=summary" -f null - 2>&1 | grep "Input Integrated" | awk '{print $3}')"
 assert_eq True "$(close "$LUFS" -14 1)" "reel loudness $LUFS within 1 LU of -14"
 
+# 3b. le format de sortie est celui du PREMIER RUSH du projet, même si la séquence commence par un autre
+"$D" projet new ord X >/dev/null 2>&1; "$D" projet add ord Y >/dev/null 2>&1
+"$DERUSH_PY" -I -c '
+import sys; sys.path.insert(0, sys.argv[1]); import projet
+root = sys.argv[2]; p = projet.charger(root, "ord")
+p["sequence"] = projet.valider(root, p, [projet.blocs(root, "Y")[0], projet.blocs(root, "X")[0]]); projet.ecrire(root, "ord", p)' "$ROOT/derush" "$O"
+out="$("$D" projet render ord 2>&1)"; rc=$?
+assert_eq 0 "$rc" "project starting with the second rush renders ($out)"
+assert_eq "1080,1920,30/1" "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$O/_projets/ord/ord.derush.mp4")" "output format = first rush (X), not first bloc (Y)"
+
 # 4. bloc vide : le montage de Y exclut le bloc inséré
 cp "$O/Y/keep.json" "$T/y.keep"
 "$DERUSH_PY" -I -c '
