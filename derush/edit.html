@@ -28,6 +28,12 @@
   span.w.restored { box-shadow:inset 0 -2px 0 #3d7a4f; }
   span.w.approx { border-bottom:1px dotted var(--mute); }
   #status { font-size:13px; opacity:.85; }
+  span.insgrp { color:#1f5fa8; }
+  span.w.ins { background:#e3eefb; color:#1f5fa8; }
+  span.w.ins.struck { color:var(--cut); background:none; }
+  span.itag, button.ix { user-select:none; -webkit-user-select:none; font-size:11px; vertical-align:1px; }
+  span.itag { background:#1f5fa8; color:#fff; border-radius:3px; padding:0 5px; margin-right:4px; }
+  button.ix { border:0; background:none; color:#1f5fa8; padding:0 3px; cursor:pointer; font-size:13px; }
   span.w.prop { background:#f6c48a; }
   span.w.prop.sel { background:#e8913a; }
   button.alt { border-color:#e8913a; color:#f6c48a; }
@@ -67,6 +73,8 @@
       <span style="color:var(--mute)">Gris barré</span> : silence ou euh coupé tout seul (rétablissable).
       Pointillé : position du mot approximative.<br>
       « Monter la vidéo » applique tes coupes et rend la vidéo finale.<br>
+      <span style="color:#1f5fa8">Bleu</span> : mots collés d'une autre prise. Dans l'autre prise, sélectionne des mots et <kbd>⌘C</kbd> ;
+      ici, clique un mot puis <kbd>⌘V</kbd> : ils s'insèrent après lui. ✕ retire le collage, on peut barrer ses mots. L'aperçu ne les joue pas, le montage oui.<br>
       <span style="background:#f6c48a">Orange</span> : coupe proposée par Claude, rien n'est coupé sans ton OK.
     </div>
     <div id="props"></div>
@@ -99,7 +107,7 @@ function showResult() { srcMode = false; v.src = "/result." + EXT + q + "&t=" + 
   if (!me.proxy) { await fetch("/proxy" + q, { method: "POST" }); await waitJob("Version légère pour la page"); }
   showSource();
 })();
-let D, W = [], dissolved = [], history = [], P = [];
+let D, W = [], dissolved = [], history = [], P = [], INS = [], IW = [], lastRef = null;
 const inside = (t, spans) => spans.some(k => t >= k.start && t < k.end);
 const mid = w => (w.s + w.e) / 2;
 
@@ -138,8 +146,42 @@ fetch("/data" + q).then(r => r.json()).then(d => {
     if (p.lastChild && !/^['’-]/.test(w.w)) p.appendChild(document.createTextNode(" "));
     w.el = s; p.appendChild(s);
   });
+  INS = (d.inserts || []).map(i => ({ apres: i.apres, rush: i.rush, debut: i.debut, fin: i.fin,
+    mots: (i.mots || []).map(m => ({ w: m.w, s: m.s, e: m.e,
+      st: (i.barres || []).some(b => Math.abs(b.start - m.s) < 0.002 && Math.abs(b.end - m.e) < 0.002) ? "struck" : "kept" })) }));
   paint();
+  renderInserts();
 });
+
+// Collage : mots d'une autre prise, collés par ⌘V seulement. Ils vivent à part de W (la prise elle-même).
+function renderInserts() {
+  document.querySelectorAll("span.insgrp").forEach(e => e.remove());
+  IW = [];
+  const last = new Map();
+  INS.forEach((ins, k) => {
+    let a = -1; W.forEach((w, i) => { if (w.e <= ins.apres + 0.002) a = i; });
+    const g = document.createElement("span"); g.className = "insgrp";
+    const tag = document.createElement("span"); tag.className = "itag"; tag.textContent = ins.rush;
+    tag.title = "collé depuis la prise « " + ins.rush + " »"; g.append(document.createTextNode(" "), tag);
+    ins.mots.forEach((m, mi) => {
+      const sp = document.createElement("span"); sp.className = "w ins"; sp.textContent = m.w;
+      sp.dataset.k = k; sp.dataset.m = mi; m.el = sp;
+      if (mi) g.append(document.createTextNode(" "));
+      g.append(sp); IW.push(m);
+    });
+    const x = document.createElement("button"); x.className = "ix"; x.textContent = "✕"; x.title = "retirer tout ce collage";
+    x.onclick = () => { snapshot(); INS.splice(k, 1); renderInserts(); paint(); };
+    g.append(" ", x);
+    const anchor = last.get(a) || (a >= 0 ? W[a].el : null);
+    if (anchor) anchor.after(g); else $("#text").firstChild.prepend(g);
+    last.set(a, g);
+  });
+  paintInserts();
+}
+function paintInserts() {
+  INS.forEach(i => i.mots.forEach(m => { if (m.el) m.el.className = "w ins" + (m.st === "struck" ? " struck" : ""); }));
+}
+const insPlain = () => INS.map(i => ({ ...i, mots: i.mots.map(m => ({ w: m.w, s: m.s, e: m.e, st: m.st })) }));
 
 function paint() {
   let n = 0;
@@ -161,7 +203,7 @@ function selected() {
   return W.filter(w => r.intersectsNode(w.el));
 }
 
-function snapshot() { history.push(JSON.stringify({ st: W.map(w => [w.st, w.rc]), dissolved })); }
+function snapshot() { history.push(JSON.stringify({ st: W.map(w => [w.st, w.rc]), dissolved, ins: insPlain() })); }
 
 function dissolve(rc) {
   // un mot rétabli dans une coupe existante : la coupe entière tombe, ses autres mots restent barrés à la main
@@ -170,10 +212,19 @@ function dissolve(rc) {
   W.forEach(w => { if (w.rc === rc) w.rc = -1; });
 }
 
+function selectedIns() {
+  const sel = getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) return [];
+  const r = sel.getRangeAt(0);
+  return IW.filter(m => r.intersectsNode(m.el));
+}
+
 function strike(on) {
-  const ws = selected();
-  if (!ws.length) return;
+  const ws = selected(), is = selectedIns();
+  if (!ws.length && !is.length) return;
   snapshot();
+  is.forEach(m => { m.st = on ? "struck" : "kept"; });
+  paintInserts();
   ws.forEach(w => {
     if (on) {
       if (w.st === "kept" || w.st === "restored") w.st = "struck";
@@ -192,6 +243,7 @@ function undo() {
   const o = JSON.parse(h);
   W.forEach((w, i) => { [w.st, w.rc] = o.st[i]; });
   dissolved = o.dissolved;
+  if (o.ins) { INS = o.ins; renderInserts(); }
   paint();
 }
 
@@ -251,6 +303,8 @@ requestAnimationFrame(tick);
 
 $("#text").addEventListener("click", e => {
   const s = e.target.closest("span.w");
+  if (s && s.classList.contains("ins")) { lastRef = { k: +s.dataset.k }; return; }
+  if (s) lastRef = { i: +s.dataset.i };
   if (s && !srcMode) showSource();
   if (s && getSelection().isCollapsed) v.currentTime = W[+s.dataset.i].s;
 });
@@ -263,6 +317,33 @@ document.addEventListener("keydown", e => {
   else if (e.key === "Enter") { e.preventDefault(); strike(false); }
   else if (e.key === " ") { e.preventDefault(); v.paused ? v.play() : v.pause(); }
   else if (e.key === "z" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); undo(); }
+});
+// Copier : les mots sélectionnés vont aussi dans le presse-papiers du navigateur (localStorage), lu par l'éditeur d'une autre prise.
+document.addEventListener("copy", () => {
+  const ws = W.filter(w => w.ai >= 0 && selected_().includes(w));
+  if (!ws.length) return;
+  localStorage.setItem("derush.collage", JSON.stringify({ rush: STEM, debut: ws[0].s, fin: ws[ws.length - 1].e,
+    words: ws.map(w => ({ w: w.w, s: w.s, e: w.e, st: w.st === "kept" || w.st === "restored" ? "kept" : "struck" })) }));
+});
+function selected_() { const sel = getSelection(); if (!sel.rangeCount || sel.isCollapsed) return []; const r = sel.getRangeAt(0); return W.filter(w => r.intersectsNode(w.el)); }
+// Coller : seulement par ⌘V, après le mot cliqué (ou après le collage cliqué).
+function paste() {
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem("derush.collage") || "null"); } catch (_) {}
+  if (!c || !c.words || !c.words.length) { $("#status").textContent = "Rien à coller : sélectionne des mots dans une autre prise et ⌘C."; return; }
+  let ref = lastRef;
+  if (!ref) { const n = W.findIndex(w => w.el.classList.contains("now")); if (n >= 0) ref = { i: n }; }
+  if (!ref) { $("#status").textContent = "Clique d'abord le mot après lequel coller."; return; }
+  snapshot();
+  const ins = { rush: c.rush, debut: c.debut, fin: c.fin, mots: c.words.map(m => ({ w: m.w, s: m.s, e: m.e, st: m.st === "struck" ? "struck" : "kept" })) };
+  if (ref.k != null) { ins.apres = INS[ref.k].apres; INS.splice(ref.k + 1, 0, ins); lastRef = { k: ref.k + 1 }; }
+  else { ins.apres = W[ref.i].e; const at = INS.reduce((a, x, k) => x.apres <= ins.apres ? k + 1 : a, 0); INS.splice(at, 0, ins); lastRef = { k: at }; }
+  renderInserts(); paint();
+  $("#status").textContent = `${ins.mots.length} mots collés de « ${ins.rush} » (⌘Z pour annuler, ✕ pour retirer).`;
+}
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "v" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); paste(); }
 });
 // montage serré proposé : orange, accepté = barré comme à la main
 function showProps() {
@@ -299,11 +380,14 @@ $("#propose").onclick = async () => {
   $("#status").textContent = `${P.length} coupes proposées en ${Math.round((Date.now() - t0) / 1000)} s${r.engine ? " (moteur : " + r.engine + ")" : ""}`;
 };
 $("#save").onclick = async () => {
-  const body = { retraction_cuts: cuts(), restore: W.filter(w => w.st === "restored").map(w => {
+  const body = { inserts: INS.map(i => ({ apres: i.apres, rush: i.rush, debut: i.debut, fin: i.fin,
+    mots: i.mots.map(m => ({ w: m.w, s: m.s, e: m.e })), barres: i.mots.filter(m => m.st === "struck").map(m => ({ start: m.s, end: m.e })) })),
+    retraction_cuts: cuts(), restore: W.filter(w => w.st === "restored").map(w => {
     // mot non aligné : bornes interpolées, on ne rattrape que 0,6 s autour de son milieu
     const m = mid(w), s = w.a ? w.s : Math.max(w.s, m - 0.3), e = w.a ? w.e : Math.min(w.e, m + 0.3);
     return { start: s, end: e, word: w.w, i: w.ai }; }) };
   const r = await fetch("/save" + q, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(r => r.json());
+  if (r.error) { $("#status").textContent = "Enregistrement refusé : " + r.error; return; }
   const warn = refused.length ? ` NON COUPÉ (mot mal placé, collé à un mot gardé) : « ${refused.join(" », « ")} »` : "";
   $("#save").disabled = true;
   await fetch("/render" + q, { method: "POST" });
