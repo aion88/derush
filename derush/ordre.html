@@ -14,20 +14,20 @@ h2{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute
 video{width:100%;max-height:70vh;background:#000;border-radius:8px;margin-top:10px}
 #st{color:var(--mute);font-size:13px}
 </style></head><body>
-<header><a href="/">← accueil</a><b>Ordre des prises</b><span id="st"></span><button id="go" class="primary">Monter dans cet ordre</button></header>
+<header><a href="/">← accueil</a><b>Projet :</b><select id="pj"></select><button id="new">+ nouveau projet</button><span style="flex:1"></span><span id="st"></span><button id="go" class="primary">Monter dans cet ordre</button></header>
 <main>
-<section><h2>Prises montées (clique + pour poser)</h2><div id="av"></div></section>
+<section><h2>Prises montées (+ pour les poser dans ce projet)</h2><label style="font-size:13px"><input type="checkbox" id="libre"> seulement celles sans projet</label><div id="av"></div></section>
 <section><h2>Ordre final (glisse pour changer, ✕ pour retirer)</h2><div id="seq"></div><video id="pl" controls hidden></video></section>
 </main>
 <script>
-const $=s=>document.querySelector(s);let T=[],SEQ=JSON.parse(localStorage.getItem("derush.ordre")||"[]");
+const $=s=>document.querySelector(s);let T=[],PJ={},CUR=localStorage.getItem("derush.projet")||"",SEQ=[];
 const by=s=>T.find(t=>t.stem===s);
 function fmt(d){d=Math.round(d);return Math.floor(d/60)+":"+String(d%60).padStart(2,"0")}
 function card(t,extra){const d=document.createElement("div");d.className="c";
- d.innerHTML=`<div class="t"><b>${t.stem}</b><small>${fmt(t.duration)}</small><div class="x">${t.excerpt}…</div></div>`;
+ d.innerHTML=`<div class="t"><b>${t.stem}</b>${Object.keys(PJ).filter(k=>PJ[k].includes(t.stem)).map(k=>` <span style="font-size:11px;background:#efe9de;border-radius:4px;padding:0 6px">${k}</span>`).join("")}<small>${fmt(t.duration)}</small><div class="x">${t.excerpt}…</div></div>`;
  const a=document.createElement("a");a.href="/edit?v="+encodeURIComponent(t.stem);a.textContent="éditer";a.style.fontSize="12px";d.append(a);return d}
 function draw(){
- $("#av").innerHTML="";T.forEach(t=>{const d=card(t);const b=document.createElement("button");b.textContent="+";b.onclick=()=>{SEQ.push(t.stem);save();draw()};d.append(b);$("#av").append(d)});
+ $("#av").innerHTML="";const pris=new Set(Object.values(PJ).flat());T.filter(t=>!$("#libre").checked||!pris.has(t.stem)).forEach(t=>{const d=card(t);const b=document.createElement("button");b.textContent="+";b.onclick=()=>{SEQ.push(t.stem);save();draw()};d.append(b);$("#av").append(d)});
  $("#seq").innerHTML="";SEQ=SEQ.filter(by);let tot=0;
  SEQ.forEach((s,i)=>{const t=by(s);tot+=t.duration;const d=card(t);d.draggable=true;d.insertAdjacentHTML("afterbegin",`<span class="n">${i+1}</span>`);
   const x=document.createElement("button");x.textContent="✕";x.onclick=()=>{SEQ.splice(i,1);save();draw()};d.append(x);
@@ -37,13 +37,17 @@ function draw(){
   $("#seq").append(d)});
  $("#st").textContent=SEQ.length?`${SEQ.length} prises · ${fmt(tot)} · coupes sèches`:"";
 }
-function save(){localStorage.setItem("derush.ordre",JSON.stringify(SEQ))}
-$("#go").onclick=async()=>{if(!SEQ.length){$("#st").textContent="Pose au moins une prise.";return}
- await fetch("/ordre/monter?v=_ordre",{method:"POST",body:JSON.stringify({stems:SEQ})});poll()};
-async function poll(){const j=await fetch("/job?v=_ordre").then(r=>r.json());
+function save(){PJ[CUR]=SEQ;fetch("/ordre/projets",{method:"POST",body:JSON.stringify(PJ)})}
+function sel(){const s=$("#pj");s.innerHTML=Object.keys(PJ).map(k=>`<option ${k===CUR?"selected":""}>${k}</option>`).join("");}
+$("#pj").onchange=()=>{CUR=$("#pj").value;localStorage.setItem("derush.projet",CUR);SEQ=PJ[CUR]||[];$("#pl").hidden=true;draw();poll()};
+$("#new").onclick=()=>{const n=prompt("Nom du projet ?");if(!n||!n.trim())return;CUR=n.trim();PJ[CUR]=[];SEQ=[];localStorage.setItem("derush.projet",CUR);save();sel();draw()};
+$("#libre").onchange=()=>draw();
+$("#go").onclick=async()=>{if(!CUR){$("#st").textContent="Crée d'abord un projet.";return}if(!SEQ.length){$("#st").textContent="Pose au moins une prise.";return}
+ await fetch("/ordre/monter?p="+encodeURIComponent(CUR),{method:"POST",body:JSON.stringify({stems:SEQ})});poll()};
+async function poll(){const j=await fetch("/job?v="+encodeURIComponent("_ordre_"+CUR)).then(r=>r.json());
  if(j.running){$("#st").textContent="Montage en cours…";setTimeout(poll,2000);return}
  if(j.error){$("#st").textContent="Échec : "+(j.tail||[]).slice(-2).join(" ");return}
- if(j.kind==="ordre"||j.label){$("#st").textContent="Prêt.";$("#pl").hidden=false;$("#pl").src="/ordre/final.mp4?t="+Date.now();
-  $("#st").insertAdjacentHTML("beforeend",' <button onclick="fetch(\'/ordre/reveal?v=_ordre\',{method:\'POST\'})">Ouvrir dans le Finder</button>')}}
-fetch("/ordre/data").then(r=>r.json()).then(d=>{T=d;draw();poll()});
+ if(j.kind==="ordre"||j.label){$("#st").textContent="Prêt.";$("#pl").hidden=false;$("#pl").src="/ordre/final.mp4?p="+encodeURIComponent(CUR)+"&t="+Date.now();
+  $("#st").insertAdjacentHTML("beforeend",' <button onclick="fetch(\'/ordre/reveal?p=\'+encodeURIComponent(CUR),{method:\'POST\'})">Ouvrir dans le Finder</button>')}}
+Promise.all([fetch("/ordre/data").then(r=>r.json()),fetch("/ordre/projets").then(r=>r.json())]).then(([d,p])=>{T=d;PJ=p;if(!PJ[CUR])CUR=Object.keys(PJ)[0]||"";SEQ=PJ[CUR]||[];sel();draw();poll()});
 </script></body></html>
