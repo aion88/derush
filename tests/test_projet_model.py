@@ -586,6 +586,54 @@ class CoupesFranches(Base):
         self.assertIsNone(v)
 
 
+class Garde(Base):
+    """Un bord de clip posé à la main dans un mot prévient, il ne refuse pas ; un bord de keep.json refuse."""
+
+    def mot(self):
+        ms = projet.mots(self.root, "prise un")
+        return ms[1], (ms[1]["s"] + ms[1]["e"]) / 2
+
+    def seq1(self, d, f):
+        return {"nom": "d", "rushs": ["prise un"], "propositions": [],
+                "sequence": [{"rush": "prise un", "debut": d, "fin": f}]}
+
+    def test_bord_a_la_main_dans_un_mot_previent(self):
+        m, milieu = self.mot()
+        p = self.seq1(milieu, 100.0)
+        runs, _ = projet.plan_rendu(self.root, p)
+        self.assertEqual(projet.garde_projet(self.root, p, runs), [])
+        b = projet.bords_dans_mot(self.root, p["sequence"][0])
+        self.assertEqual([(x["cote"], x["mot"]) for x in b], [("debut", m["w"])])
+        self.assertAlmostEqual(b[0]["t"], milieu)
+        self.assertEqual(projet._resume(p, runs, [], root=self.root)["mots_coupes"], 1)
+        # fin dans un mot : idem
+        p = self.seq1(0.0, milieu)
+        runs, _ = projet.plan_rendu(self.root, p)
+        self.assertEqual(projet.garde_projet(self.root, p, runs), [])
+        self.assertEqual([x["cote"] for x in projet.bords_dans_mot(self.root, p["sequence"][0])], ["fin"])
+
+    def test_bord_sur_un_bord_de_keep_reste_refuse(self):
+        m, milieu = self.mot()
+        ecrire_rush(self.root, "prise un", self.m1, keep=[(milieu, 100.0)])
+        p = self.seq1(milieu, 100.0)  # le bord du clip est AUSSI un bord de keep.json : il vient du rush
+        runs, _ = projet.plan_rendu(self.root, p)
+        err = projet.garde_projet(self.root, p, runs)
+        self.assertEqual(len(err), 1, err)
+        self.assertIn("dans un mot", err[0])
+        self.assertEqual(projet.bords_dans_mot(self.root, p["sequence"][0]), [])
+
+    def test_bord_hors_mot_ne_previent_pas(self):
+        ms = projet.mots(self.root, "prise un")
+        p = self.seq1(ms[0]["s"] - 0.05, ms[2]["e"] + 0.05)
+        self.assertEqual(projet.bords_dans_mot(self.root, p["sequence"][0]), [])
+
+    def test_bord_dans_un_mot_etire_couvert_par_du_silence_ne_previent_pas(self):
+        ecrire_rush(self.root, "S", [("Il", 1.0, 3.0), ("faut", 3.1, 3.4)], keep=[(0.0, 5.0)], silences=[(2.0, 3.0)])
+        self.assertEqual(projet.bords_dans_mot(self.root, {"rush": "S", "debut": 0.0, "fin": 2.0}), [])
+        ecrire_rush(self.root, "S", [("Il", 1.0, 3.0), ("faut", 3.1, 3.4)], keep=[(0.0, 5.0)], silences=[])
+        self.assertEqual(len(projet.bords_dans_mot(self.root, {"rush": "S", "debut": 0.0, "fin": 2.0})), 1)
+
+
 class Placement(Base):
     def setUp(self):
         super().setUp()
@@ -888,12 +936,14 @@ class Rendu(Base):
         self.assertAlmostEqual(projet._marge_debut(ms, sil, S, S - 0.5), ms[3]["s"] - 0.2, places=3)
 
     def test_garde_rouge_borne_dans_un_mot(self):
+        # une borne qui vient du montage du rush (keep.json) coupe un mot : refusée comme avant
         ms = projet.mots(self.root, "prise un")
         milieu = (ms[1]["s"] + ms[1]["e"]) / 2
-        p = self.seq({"rush": "prise un", "debut": milieu, "fin": ms[2]["e"] + 0.05})
+        ecrire_rush(self.root, "prise un", self.m1, keep=[(0, milieu), (milieu + 1.0, 100)])
+        p = self.seq({"rush": "prise un", "debut": 0.0, "fin": 100.0})
         runs, _ = projet.plan_rendu(self.root, p)
         err = projet.garde_projet(self.root, p, runs)
-        self.assertEqual(len(err), 1)
+        self.assertEqual(len(err), 1, err)
         self.assertIn("dans un mot", err[0])
 
     def mot_etire(self, silences):

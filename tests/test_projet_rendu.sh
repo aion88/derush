@@ -153,6 +153,25 @@ done
 assert_contains "$(cat "$O/_projets/dur/dur.fcpxml")" "Z.mp4" "hard cuts: fcpxml timeline cites each source"
 export DERUSH_PROJET_FONDU=1
 
+# 4b. bord tiré à la main : dans un mot = prévenu (jamais refusé) ; vers l'extérieur d'une coupe du rush = joué
+unset DERUSH_PROJET_FONDU
+"$D" projet new mc X >/dev/null 2>&1
+ATT="$("$DERUSH_PY" -I -c '
+import json, sys; sys.path.insert(0, sys.argv[1]); import projet
+root = sys.argv[2]; p = projet.charger(root, "mc"); w = projet.mots(root, "X")
+mid = round((w[1]["s"] + w[1]["e"]) / 2, 3)
+a = {"rush": "X", "debut": mid, "fin": w[2]["e"]}
+b = {"rush": "X", "debut": round(w[3]["s"] - 0.6, 3), "fin": w[5]["e"]}
+p["sequence"] = projet.valider(root, p, [a, b]); projet.ecrire(root, "mc", p)
+print(round((a["fin"] - a["debut"]) + (b["fin"] - b["debut"]), 3))' "$ROOT/derush" "$O")"
+out="$("$D" projet render mc 2>&1)"; rc=$?
+assert_eq 0 "$rc" "hand-set edge in a word and outward trim: render exits 0 ($out)"
+case "$out" in *"GARDE ROUGE"*) ok=0;; *) ok=1;; esac; assert_eq 1 "$ok" "no GARDE ROUGE for hand-set edges"
+assert_contains "$(cat "$O/_projets/mc/cuts.md")" "Mots coupés, à écouter" "cuts.md lists the word cut by hand"
+assert_eq True "$(close "$(dur "$O/_projets/mc/mc.derush.mp4")" "$ATT" 0.25)" "the outward trim is played: duration $(dur "$O/_projets/mc/mc.derush.mp4") vs $ATT"
+assert_eq 1 "$(jget_mc=$("$DERUSH_PY" -I "$PJ" resume "$O" mc); "$DERUSH_PY" -I -c 'import json,sys;print(json.loads(sys.argv[1])["mots_coupes"])' "$jget_mc")" "resume counts one word cut by hand"
+export DERUSH_PROJET_FONDU=1
+
 # 8. CLI
 "$D" projet frob demo >/dev/null 2>&1; assert_eq 1 $? "unknown projet sub-command exits 1"
 assert_contains "$("$D" 2>&1)" "derush prep" "no args still prints the single-rush usage"

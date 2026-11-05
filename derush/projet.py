@@ -837,12 +837,38 @@ def _fr(x):
     return f"{x:.2f}".replace(".", ",")
 
 
+def _perte_dans_mot(m, t, debut, sil):
+    """Vrai si le bord t coupe le mot m en perdant autre chose que du silence détecté (règle de check_clips)."""
+    if not m["s"] + 0.03 < t < m["e"] - 0.03:
+        return False
+    x, y = (m["s"], t) if debut else (t, m["e"])
+    couvert = sum(max(0.0, min(y, sb) - max(x, sa)) for sa, sb in sil)
+    return (y - x) - couvert > 0.03
+
+
+def bords_dans_mot(root, bloc):
+    """Bords du clip posés dans un mot (à la main) : [{"cote","t","mot"}]. Un bord qui est aussi un bord de
+    keep.json vient du montage du rush : il n'est pas à signaler ici, la garde le refuse."""
+    ms, sil, kp = mots(root, bloc["rush"]), _silences(root, bloc["rush"]), garde(root, bloc["rush"])
+    bords_keep = [x for a, z in (kp or []) for x in (a, z)]
+    out = []
+    for cote, t in (("debut", bloc["debut"]), ("fin", bloc["fin"])):
+        if any(abs(t - k) < 1e-3 for k in bords_keep):
+            continue
+        for m in ms:
+            if _perte_dans_mot(m, t, cote == "debut", sil):
+                out.append({"cote": cote, "t": t, "mot": m["w"]})
+    return out
+
+
 def garde_projet(root, p, runs):
     """Erreurs (liste vide = vert) : plage hors du montage du rush, borne dans un mot, run trop court."""
     err = []
     for k, r in enumerate(runs):
         ms, sil, kp = mots(root, r["rush"]), _silences(root, r["rush"]), garde(root, r["rush"])
         voulu = [iv for i in r.get("blocs", []) for iv in hors_montage_voulu(root, p["sequence"][i])]
+        bords_clip = [p["sequence"][i][c] for i in r.get("blocs", []) for c in ("debut", "fin")]
+        bords_keep = [x for a_, z_ in (kp or []) for x in (a_, z_)]
         for a, z in r["plages"]:
             if kp is not None:
                 morceaux = [m for x, y in _moins(a, z, kp) for m in _moins(x, y, voulu)]
@@ -856,16 +882,13 @@ def garde_projet(root, p, runs):
                             f"plage {_fr(x)}-{_fr(y)} s de {r['rush']} hors du montage du rush"
                         )
             for t, debut_plage in ((a, True), (z, False)):
+                if any(abs(t - e) < 1e-3 for e in bords_clip) and not any(abs(t - k) < 1e-3 for k in bords_keep):
+                    continue  # bord de clip posé à la main : signalé (bords_dans_mot), jamais refusé
                 for m in ms:
-                    if m["s"] + 0.03 < t < m["e"] - 0.03:
-                        # Même règle que check_clips : la partie du mot du côté coupé peut être du
-                        # silence détecté (mot étiré sur une pause) ; seul le reste est une perte.
-                        x, y = (m["s"], t) if debut_plage else (t, m["e"])
-                        couvert = sum(max(0.0, min(y, sb) - max(x, sa)) for sa, sb in sil)
-                        if (y - x) - couvert > 0.03:
-                            err.append(
-                                f"borne {_fr(t)} s de {r['rush']} dans un mot : « {m['w']} »"
-                            )
+                    # Même règle que check_clips : la partie du mot du côté coupé peut être du
+                    # silence détecté (mot étiré sur une pause) ; seul le reste est une perte.
+                    if _perte_dans_mot(m, t, debut_plage, sil):
+                        err.append(f"borne {_fr(t)} s de {r['rush']} dans un mot : « {m['w']} »")
         if FONDU_ACTIF and len(runs) > 1:
             duree = sum(z - a for a, z in r["plages"])
             if duree < 2 * FONDU + 0.1 - 1e-6:
@@ -903,11 +926,12 @@ def mots_dans_fondu(root, runs):
 def resume(root, nom):
     p = charger(root, nom)
     runs, vides = plan_rendu(root, p)
-    return _resume(p, runs, vides)
+    return _resume(p, runs, vides, root=root)
 
 
-def _resume(p, runs, vides):
+def _resume(p, runs, vides, root=None):
     return {
+        "mots_coupes": 0 if root is None else sum(len(bords_dans_mot(root, b)) for b in p.get("sequence", [])),
         "total": round(sum(z - a for r in runs for a, z in r["plages"]), 3),
         "fondus": max(0, len(runs) - 1) if FONDU_ACTIF else 0,
         "blocs": len(p.get("sequence", [])),
@@ -1036,7 +1060,7 @@ def rendre(root, nom):
     for r in runs:
         if (r["kind"] == "audio") != audio:
             raise ErreurProjet(f"{r['rush']} n'est pas du même genre que le projet")
-    res = _resume(p, runs, vides)  # depuis le plan en main : projet.json peut changer pendant le montage
+    res = _resume(p, runs, vides, root=root)  # depuis le plan en main : projet.json peut changer pendant le montage
     d = dossier(root, nom)
     work = os.path.join(d, "_work")
     os.makedirs(work, exist_ok=True)
@@ -1136,6 +1160,15 @@ def _cuts_md(root, nom, p, runs, vides, infos, audio, res, t0):
                     f"- {r['rush']} : {inf['w']}x{inf['h']} {_fps_txt(inf['fps'])} i/s mis à l'échelle en "
                     f"{t0['w']}x{t0['h']} {_fps_txt(t0['fps'])} i/s (son {inf['rate']} Hz vers {t0['rate']} Hz)"
                 )
+        L.append("")
+    coupes = [(i, x) for i, b in enumerate(seq) for x in bords_dans_mot(root, b)]
+    if coupes:
+        L += ["## Mots coupés, à écouter", ""]
+        L += [
+            f"- « {x['mot']} » : {'début' if x['cote'] == 'debut' else 'fin'} du clip {i + 1} "
+            f"({seq[i]['rush']}, {_fr(x['t'])} s)"
+            for i, x in coupes
+        ]
         L.append("")
     if FONDU_ACTIF:
         L += ["## Mots dans un fondu, à écouter", ""]
