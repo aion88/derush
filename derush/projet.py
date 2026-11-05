@@ -11,6 +11,8 @@ Usage (root = $DERUSH_OUT_ROOT) :
   projet.py add <root> <nom> <STEM>      ajoute un rush
   projet.py kind <root> <nom>            audio ou video
   projet.py resume <root> <nom>          durées et nombre de fondus (JSON)
+  projet.py render <root> <nom>          monte le projet (mp4|m4a, fcpxml, cuts.md)
+  projet.py a-rendre <root> <nom>        les rushs sans keep.json, un par ligne
   projet.py montrer <root> <nom>         une ligne par bloc : rush, début, fin, texte
   projet.py placer <root> <nom> <STEM> <début> <fin>   propose où va ce bloc (JSON), le range
   projet.py accepter|refuser <root> <nom> <k>          applique ou efface la proposition k
@@ -20,7 +22,9 @@ Les erreurs sortent en français sur stderr, code 1, sans traceback.
 import json
 import os
 import re
+import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -682,6 +686,194 @@ def resume(root, nom):
     }
 
 
+# ---------------------------------------------------------------- rendu
+
+
+def a_rendre(root, nom):
+    """Les rushs du projet qui n'ont pas encore de keep.json (derush render d'abord)."""
+    p = charger(root, nom)
+    return [s for s in p.get("rushs", []) if garde(root, s) is None]
+
+
+def _sonde(chemin):
+    d = json.loads(
+        subprocess.run(
+            ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", chemin],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    )
+    v = next((x for x in d["streams"] if x["codec_type"] == "video"), None)
+    a = next((x for x in d["streams"] if x["codec_type"] == "audio"), None)
+    return {
+        "w": int(v["width"]) if v else 0,
+        "h": int(v["height"]) if v else 0,
+        "fps": v["r_frame_rate"] if v else "",
+        "rate": int(a["sample_rate"]) if a else 48000,
+        "layout": (a.get("channel_layout") or ("mono" if int(a.get("channels", 2)) == 1 else "stereo")) if a else "stereo",
+        "duree": float(d["format"]["duration"]),
+        "vduree": float(v.get("duration") or d["format"]["duration"]) if v else 0.0,
+    }
+
+
+def _fps_txt(fps):
+    try:
+        n, d = fps.split("/")
+        x = float(n) / float(d)
+        return str(int(x)) if abs(x - round(x)) < 1e-3 else f"{x:.3f}"
+    except (ValueError, ZeroDivisionError):
+        return fps
+
+
+def _ffmpeg(args):
+    r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error"] + args, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise ErreurProjet(f"ffmpeg en échec : {r.stderr.strip()[-400:]}")
+
+
+def _chaine(runs, fichiers, infos, audio):
+    """Graphe ffmpeg : chaque run normalisé au format du premier, puis xfade / acrossfade de 0,2 s."""
+    t0 = infos[0]
+    lignes = []
+    n = len(runs)
+    for i in range(n):
+        if not audio:
+            lignes.append(
+                f"[{i}:v]scale={t0['w']}:{t0['h']}:force_original_aspect_ratio=decrease,"
+                f"pad={t0['w']}:{t0['h']}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={t0['fps']},"
+                f"format=yuv420p,settb=AVTB[v{i}]"
+            )
+        lignes.append(
+            f"[{i}:a]aresample={t0['rate']},aformat=sample_fmts=fltp:channel_layouts={t0['layout']}[a{i}]"
+        )
+    if not audio:
+        cumul, prec = 0.0, "v0"
+        for k in range(1, n):
+            cumul += infos[k - 1]["vduree"]
+            off = cumul - k * FONDU
+            sortie = f"x{k}"
+            lignes.append(
+                f"[{prec}][v{k}]xfade=transition=fade:duration={FONDU}:offset={off:.6f}[{sortie}]"
+            )
+            prec = sortie
+    prec = "a0"
+    for k in range(1, n):
+        sortie = f"y{k}"
+        lignes.append(f"[{prec}][a{k}]acrossfade=d={FONDU}[{sortie}]")
+        prec = sortie
+    return ";\n".join(lignes), (None if audio else f"x{n - 1}"), prec
+
+
+def rendre(root, nom):
+    """Monte le projet : <nom>.derush.mp4|m4a, <nom>.fcpxml (vidéo), cuts.md. Renvoie le chemin."""
+    p = charger(root, nom)
+    runs, vides = plan_rendu(root, p)
+    if not runs:
+        raise ErreurProjet("rien à monter : la séquence est vide ou entièrement coupée")
+    err = garde_projet(root, p, runs)
+    if err:
+        raise ErreurProjet("GARDE ROUGE : " + " ; ".join(err))
+    audio = genre(root, p) == "audio"
+    for r in runs:
+        if (r["kind"] == "audio") != audio:
+            raise ErreurProjet(f"{r['rush']} n'est pas du même genre que le projet")
+    d = dossier(root, nom)
+    work = os.path.join(d, "_work")
+    os.makedirs(work, exist_ok=True)
+    ext = "m4a" if audio else "mp4"
+    sortie = os.path.join(d, f"{nom}.derush.{ext}")
+    cut = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "cut.sh")
+    env = dict(os.environ, AUDIO_ONLY="1" if audio else "0")
+    fichiers = []
+    for k, r in enumerate(runs):
+        rj = os.path.join(work, f"run-{k}.json")
+        json.dump([{"start": a, "end": z} for a, z in r["plages"]], open(rj, "w"))
+        fo = os.path.join(work, f"run-{k}.{ext}")
+        c = subprocess.run(["bash", cut, r["source"], rj, fo], capture_output=True, text=True, env=env)
+        if c.returncode != 0 or not os.path.isfile(fo):
+            raise ErreurProjet(f"{r['rush']} ne se coupe pas : {(c.stderr or c.stdout).strip()[-300:]}")
+        fichiers.append(fo)
+    infos = [_sonde(f) for f in fichiers]
+    if len(runs) == 1:
+        os.replace(fichiers[0], sortie)
+    else:
+        graphe, vlab, alab = _chaine(runs, fichiers, infos, audio)
+        gp = os.path.join(work, "graph.txt")
+        open(gp, "w").write(graphe)
+        args = []
+        for f in fichiers:
+            args += ["-i", f]
+        args += ["-/filter_complex", gp]
+        if audio:
+            args += ["-map", f"[{alab}]", "-c:a", "aac", "-b:a", "192k"]
+        else:
+            args += ["-map", f"[{vlab}]", "-map", f"[{alab}]", "-c:v", "libx264", "-preset", "fast",
+                     "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
+        _ffmpeg(args + ["-movflags", "+faststart", sortie])
+    res = resume(root, nom)
+    attendu = res["total"] - FONDU * res["fondus"]
+    reel = _sonde(sortie)["duree"]
+    if abs(reel - attendu) > 0.25:
+        raise ErreurProjet(f"GARDE : durée {reel:.2f} s, attendu {attendu:.2f} s (±0,25)")
+    if not audio:
+        import fcpxml
+
+        fcpxml.build(
+            [(r["source"], a, z) for r in runs for a, z in r["plages"]],
+            os.path.join(d, f"{nom}.fcpxml"),
+            nom,
+        )
+    _cuts_md(root, nom, p, runs, vides, infos, audio, res)
+    for k in range(len(fichiers)):
+        for f in (os.path.join(work, f"run-{k}.{ext}"), os.path.join(work, f"run-{k}.json")):
+            if os.path.exists(f):
+                os.remove(f)
+    return sortie
+
+
+def _cuts_md(root, nom, p, runs, vides, infos, audio, res):
+    seq = p["sequence"]
+    L = [f"# {nom} : projet", "", f"Monté le {time.strftime('%Y-%m-%d %H:%M')}.", "", "## Blocs", ""]
+    for i, b in enumerate(seq):
+        if i in vides:
+            L.append(
+                f"{i + 1}. bloc vide : {b['rush']} {_fr(b['debut'])}-{_fr(b['fin'])} s, "
+                "tout est coupé par le montage du rush, ignoré"
+            )
+            continue
+        gardees = sum(z - a for a, z in plages(root, b))
+        texte = " ".join(m["w"] for m in mots_du_bloc(root, b) if m["garde"])
+        L.append(
+            f"{i + 1}. {b['rush']} {_fr(b['debut'])}-{_fr(b['fin'])} s, {_fr(gardees)} s gardées : {' '.join(texte.split()[:8])}"
+        )
+    L += ["", "## Passages (un passage = des blocs de suite d'un même rush)", ""]
+    for k, r in enumerate(runs):
+        L.append(
+            f"{k + 1}. {r['rush']} : blocs {', '.join(str(i + 1) for i in r['blocs'])}, "
+            f"{_fr(sum(z - a for a, z in r['plages']))} s"
+        )
+    nb = sum(1 for i in range(len(seq)) if i not in vides)
+    L += ["", f"{max(0, nb - 1)} raccords, {res['fondus']} fondus de 0,2 s (vidéo et son) entre rushs différents ;",
+          "même rush : coupe franche.", ""]
+    if vides:
+        L += [f"{len(vides)} bloc(s) vide(s) ignoré(s) (voir la liste des blocs).", ""]
+    if not audio:
+        t0 = infos[0]
+        for r, inf in zip(runs, infos):
+            if (inf["w"], inf["h"], inf["fps"]) != (t0["w"], t0["h"], t0["fps"]) or inf["rate"] != t0["rate"]:
+                L.append(
+                    f"- {r['rush']} : {inf['w']}x{inf['h']} {_fps_txt(inf['fps'])} i/s mis à l'échelle en "
+                    f"{t0['w']}x{t0['h']} {_fps_txt(t0['fps'])} i/s (son {inf['rate']} Hz vers {t0['rate']} Hz)"
+                )
+        L.append("")
+    L += ["## Mots dans un fondu, à écouter", ""]
+    mf = mots_dans_fondu(root, runs)
+    L += [f"- {x}" for x in mf] if mf else ["aucun"]
+    if not audio:
+        L += ["", "Timeline : coupes franches, les fondus ne sont que dans le .mp4"]
+    L.append("")
+    open(os.path.join(dossier(root, nom), "cuts.md"), "w").write("\n".join(L))
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -715,6 +907,11 @@ def main(argv):
             accepter(root, nom, int(rest[0]))
         elif cmd == "refuser":
             refuser(root, nom, int(rest[0]))
+        elif cmd == "render":
+            print(rendre(root, nom))
+        elif cmd == "a-rendre":
+            for x in a_rendre(root, nom):
+                print(x)
         elif cmd == "resume":
             print(json.dumps(resume(root, nom)))
         elif cmd == "montrer":

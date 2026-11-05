@@ -22,6 +22,10 @@
 #   derush export <STEM>      <STEM>.reel.mp4 : 1080x1920, 30 fps, -14 LUFS, faststart, prêt à poster
 #   derush all    <video>     prep puis render puis export, avec 0 faux départ (rapide, moins propre)
 #   derush kind   <fichier>   audio ou video (sans flux image, la pochette d'un mp3 ne compte pas)
+#   derush projet new <nom> [STEM…]   un projet = plusieurs rushs déjà dérushés, UN montage (studio : page projet)
+#   derush projet add <nom> <STEM>    ajoute un rush au projet
+#   derush projet render <nom>        monte le projet : <nom>.derush.mp4, .fcpxml, cuts.md, fondus de 0,2 s entre rushs
+#   derush projet export <nom>        <nom>.reel.mp4 (ou .export.m4a) : même sortie qu'un rush. Dossier : <rushs>/_projets/<nom>/
 #
 # Un AUDIO seul (m4a, mp3, wav, aiff, caf : mémo vocal, podcast) passe la même chaîne : le montage
 # sort en <STEM>.derush.m4a, l'export en <STEM>.export.m4a (-14 LUFS). Pas de timeline, de logos, de look.
@@ -75,7 +79,7 @@ export DERUSH_LLM="${DERUSH_LLM:-}" DERUSH_LOOK="${DERUSH_LOOK:-}"
 RUSHS="$DERUSH_OUT_ROOT"
 OPEN="${DERUSH_OPEN:-open}"
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 log() { printf '[derush %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 jlen() { "$DERUSH_PY" -I -c "import json,sys;d=json.load(open(sys.argv[1]));print(len(d[sys.argv[2]] if len(sys.argv)>2 else d))" "$@"; }
 
@@ -162,6 +166,9 @@ if [[ "$CMD" == align ]]; then
 fi
 case "$CMD" in studio|stop|config|align|kind) ;; *) [[ -z "$CMD" || -z "$ARG" ]] && usage;; esac
 shift 2
+# derush projet <sous-commande> <nom> [STEM…] : arguments positionnels seulement (ni option, ni résolution de STEM).
+PSUB=""; PARGS=()
+if [[ "$CMD" == projet ]]; then PSUB="$ARG"; PARGS=("$@"); set --; fi
 
 LANG_=fr; NOISE=-35; MIN=0.45; PAD=0.12; FROM=""
 while [[ $# -gt 0 ]]; do
@@ -175,6 +182,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$CMD" == projet ]]; then
+  OUT=""; W=""; STEM=""; V=""; KIND=video; EXT=mp4
+else
 # Résolution : un fichier → sa source ; un STEM → la source rangée dans $DERUSH_OUT_ROOT/<STEM>/
 if [[ -f "$ARG" ]]; then
   V="$(cd "$(dirname "$ARG")" && pwd)/$(basename "$ARG")"
@@ -190,6 +200,7 @@ mkdir -p "$W"
 # KIND = audio | video. Écrit par prep ; un rush d'avant (sans fichier) est une vidéo.
 KIND=video; [[ -f "$W/kind" ]] && KIND="$(cat "$W/kind")"
 EXT=mp4; [[ "$KIND" == audio ]] && EXT=m4a
+fi
 
 prompt_for() {
   case "$1" in
@@ -437,6 +448,36 @@ cmd_export() {
   log "export : $REEL ($SZ, $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "$REEL"))"
 }
 
+# derush projet : le modèle, le placement et le rendu vivent dans projet.py ; ici seulement la colle.
+cmd_projet() {
+  local P=("$DERUSH_PY" -I "$D/projet.py") nom="${PARGS[0]:-}" s
+  case "$PSUB" in
+    new)
+      [[ -n "$nom" ]] || usage
+      if (( ${#PARGS[@]} > 1 )); then "${P[@]}" new "$RUSHS" "$nom" "${PARGS[@]:1}"; else "${P[@]}" new "$RUSHS" "$nom"; fi
+      log "projet $nom créé : $RUSHS/_projets/$nom/projet.json";;
+    add)
+      (( ${#PARGS[@]} == 2 )) || usage
+      "${P[@]}" add "$RUSHS" "$nom" "${PARGS[1]}";;
+    render)
+      [[ -n "$nom" ]] || usage
+      "${P[@]}" kind "$RUSHS" "$nom" >/dev/null
+      # un rush sans keep.json se rend d'abord, comme tout rush
+      while IFS= read -r s; do
+        [[ -n "$s" ]] || continue
+        "$ROOT/bin/derush" render "$s" || { echo "le rush $s ne se rend pas, voir son cuts.md" >&2; exit 1; }
+      done < <("${P[@]}" a-rendre "$RUSHS" "$nom")
+      "${P[@]}" render "$RUSHS" "$nom" >/dev/null
+      log "projet $nom monté : $RUSHS/_projets/$nom/";;
+    export)
+      [[ -n "$nom" ]] || usage
+      KIND="$("${P[@]}" kind "$RUSHS" "$nom")"
+      OUT="$RUSHS/_projets/$nom"; STEM="$nom"; FROM=""
+      cmd_export;;
+    *) usage;;
+  esac
+}
+
 case "$CMD" in
   prep) cmd_prep;;
   words) cmd_words;;
@@ -448,5 +489,6 @@ case "$CMD" in
   apercu) cmd_apercu;;
   export) cmd_export;;
   all) cmd_prep; cmd_render; cmd_export;;
+  projet) cmd_projet;;
   *) usage;;
 esac
